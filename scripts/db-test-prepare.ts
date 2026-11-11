@@ -23,11 +23,11 @@ import { checkTestDatabaseEnv } from "../src/test-support/test-database-url";
 
 async function ensureDatabaseExists(url: string, database: string) {
   const probe = new Client({ connectionString: url });
+  let connected = false;
 
   try {
     await probe.connect();
-    await probe.end();
-    return;
+    connected = true;
   } catch (error) {
     await probe.end().catch(() => undefined);
 
@@ -37,18 +37,37 @@ async function ensureDatabaseExists(url: string, database: string) {
     }
   }
 
-  const admin = new URL(url);
-  admin.pathname = "/postgres";
-  const client = new Client({ connectionString: admin.toString() });
+  if (!connected) {
+    const admin = new URL(url);
+    admin.pathname = "/postgres";
 
-  await client.connect();
+    const client = new Client({ connectionString: admin.toString() });
+
+    await client.connect();
+
+    try {
+      await client.query(`CREATE DATABASE "${database.replace(/"/g, '""')}"`);
+      console.log(`Created test database "${database}".`);
+    } finally {
+      await client.end();
+    }
+
+    // Connect to the requested database after creation.
+    await probe.connect();
+  }
 
   try {
-    // Identifier is validated by checkTestDatabaseEnv; quote it defensively.
-    await client.query(`CREATE DATABASE "${database.replace(/"/g, '""')}"`);
-    console.log(`Created test database "${database}".`);
+    const identity = await probe.query<{ name: string }>(
+      "SELECT current_database() AS name",
+    );
+
+    if (identity.rows[0]?.name !== database) {
+      throw new Error(
+        `Connected to an unexpected database. Expected "${database}".`,
+      );
+    }
   } finally {
-    await client.end();
+    await probe.end();
   }
 }
 

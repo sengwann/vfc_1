@@ -12,7 +12,7 @@ import { EditFundForm } from "./edit-fund-form";
 import { ExtendFundForm } from "./extend-fund-form";
 import { FundLifecycleActions } from "./fund-lifecycle-actions";
 function html(element: Parameters<typeof renderToStaticMarkup>[0]) {
-  return renderToStaticMarkup(createElement(TranslationProvider, { language: "EN", children: element }));
+  return renderToStaticMarkup(createElement(TranslationProvider, { language: "EN" }, element));
 }
 function hidden(markup: string) {
   const data = new FormData();

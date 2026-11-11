@@ -209,7 +209,7 @@ function presentation(message: unknown, language: "EN" | "MY", lifecycle = false
   const children = lifecycle
     ? createElement(FundLifecycleActions, { fundId:"v", termsVersion:2, status:"ACTIVE", hasOtherActiveFund:false, unpaidCount:0, lifecycleError:message as string })
     : createElement(FundCompletionError, { message });
-  return renderToStaticMarkup(createElement(TranslationProvider, { language, children }));
+  return renderToStaticMarkup(createElement(TranslationProvider, { language }, children));
 }
 function escaped(text: string) {
   return text.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#x27;");

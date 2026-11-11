@@ -30,17 +30,29 @@ export function inspectDatabaseError(error: unknown): DatabaseErrorDetails {
       const code = node[key];
       if (typeof code !== "string") continue;
       // PostgreSQL P0001 is a SQLSTATE, not a Prisma P1xxx/P2xxx code.
-      if (/^[0-9A-Z]{5}$/.test(code) && !/^P[12]\d{3}$/.test(code)) sqlStates.add(code);
+      if (/^[0-9A-Z]{5}$/.test(code) && !/^P[12]\d{3}$/.test(code))
+        sqlStates.add(code);
       if (/^P[12]\d{3}$/.test(code) && key === "code") prismaCodes.add(code);
       if (!/^[0-9A-Z]{5}$/.test(code)) unrecognizedCode = true;
     }
-    if (typeof node.constraint === "string") constraints.add(node.constraint);
+    if (typeof node.constraint === "string") {
+      constraints.add(node.constraint);
+    }
+
+    const constraint = record(node.constraint);
+
+    if (typeof constraint?.index === "string") {
+      constraints.add(constraint.index);
+    }
     const meta = record(node.meta);
     const cause = record(node.cause);
     if (
-      (node.name === "DriverAdapterError" && cause?.kind === "TransactionWriteConflict") ||
-      record(record(meta?.driverAdapterError)?.cause)?.kind === "TransactionWriteConflict"
-    ) adapterConflict = true;
+      (node.name === "DriverAdapterError" &&
+        cause?.kind === "TransactionWriteConflict") ||
+      record(record(meta?.driverAdapterError)?.cause)?.kind ===
+        "TransactionWriteConflict"
+    )
+      adapterConflict = true;
     pending.push(node.cause, meta?.driverAdapterError, node.originalError);
     // P2010 exposes its raw-query SQLSTATE in meta.code.
     if (node.code === "P2010") pending.push(meta);
@@ -59,9 +71,13 @@ export function inspectDatabaseError(error: unknown): DatabaseErrorDetails {
     prismaCodes: [...prismaCodes],
     constraints: [...constraints],
     // Conflicting explicit diagnostics fail closed, even under a retry wrapper.
-    retryable: !incomplete && !unrecognizedCode && !hasOtherState && !hasOtherPrismaCode && (
-      [...sqlStates].some((code) => retryStates.has(code)) ||
-      prismaCodes.has("P2034") || adapterConflict
-    ),
+    retryable:
+      !incomplete &&
+      !unrecognizedCode &&
+      !hasOtherState &&
+      !hasOtherPrismaCode &&
+      ([...sqlStates].some((code) => retryStates.has(code)) ||
+        prismaCodes.has("P2034") ||
+        adapterConflict),
   };
 }

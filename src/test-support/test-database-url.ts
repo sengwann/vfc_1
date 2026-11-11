@@ -21,6 +21,7 @@ export type TestDatabaseProblem =
   | "NOT_A_TEST_DATABASE"
   | "SAME_AS_DATABASE_URL"
   | "REMOTE_HOST"
+  | "INVALID_DATABASE_URL"
   | "PRODUCTION_ENVIRONMENT";
 
 export interface TestDatabaseTarget {
@@ -59,9 +60,41 @@ export function parseDatabaseUrl(
     return "NOT_POSTGRES";
   }
 
-  const rawHost = url.searchParams.get("host") ?? url.hostname;
+  // pg-connection-string uses the last query parameter when duplicated.
+  // Reject duplicates instead of validating an ambiguous configuration.
+  const hosts = url.searchParams.getAll("host");
+  const ports = url.searchParams.getAll("port");
+
+  if (hosts.length > 1 || ports.length > 1) {
+    return "INVALID_URL";
+  }
+
+  const rawHost = hosts.length === 1 ? hosts[0] : url.hostname;
+
+  // pg accepts comma-separated hosts. Reject them because this validator
+  // only supports one unambiguous database host.
+  if (!rawHost || rawHost.includes(",") || rawHost !== rawHost.trim()) {
+    return "INVALID_URL";
+  }
+
   const host = rawHost.replace(/^\[|\]$/g, "").toLowerCase();
-  const port = url.port ? Number(url.port) : 5432;
+
+  const rawPort = ports.length === 1 ? ports[0] : url.port;
+
+  let port = 5432;
+
+  if (rawPort !== "") {
+    if (!/^\d+$/.test(rawPort)) {
+      return "INVALID_URL";
+    }
+
+    port = Number(rawPort);
+
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return "INVALID_URL";
+    }
+  }
+
   let database: string;
 
   try {
@@ -70,7 +103,7 @@ export function parseDatabaseUrl(
     return "INVALID_URL";
   }
 
-  if (host.length === 0 || database.length === 0 || !Number.isInteger(port)) {
+  if (!host || !database) {
     return "INVALID_URL";
   }
 
@@ -105,7 +138,10 @@ export function isTestDatabaseName(name: string): boolean {
     .some((word) => word === "test" || word === "tests");
 }
 
-function fail(problem: TestDatabaseProblem, message: string): TestDatabaseCheck {
+function fail(
+  problem: TestDatabaseProblem,
+  message: string,
+): TestDatabaseCheck {
   return { ok: false, problem, message };
 }
 
@@ -148,7 +184,14 @@ export function checkTestDatabaseEnv(env: TestDatabaseEnv): TestDatabaseCheck {
   if (devRaw) {
     const dev = parseDatabaseUrl(devRaw);
 
-    if (typeof dev === "object" && isSameDatabase(parsed, dev)) {
+    if (dev === "INVALID_URL" || dev === "NOT_POSTGRES") {
+      return fail(
+        "INVALID_DATABASE_URL",
+        "DATABASE_URL is not a valid PostgreSQL URL, so the test database cannot be safely compared against it.",
+      );
+    }
+
+    if (isSameDatabase(parsed, dev)) {
       return fail(
         "SAME_AS_DATABASE_URL",
         "TEST_DATABASE_URL points at the same database as DATABASE_URL.",
