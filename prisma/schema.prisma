@@ -1,0 +1,538 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  SYSTEM_ADMIN
+  CHIEF
+  VILLAGER
+}
+
+enum VillageStatus {
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum MembershipStatus {
+  PENDING
+  ACTIVE
+  REJECTED
+  REMOVED
+}
+
+enum PaymentStatus {
+  ACCEPTED
+  VOIDED
+}
+
+enum ReceiptStatus {
+  ACTIVE
+  VOIDED
+}
+
+enum AuditActionType {
+  CREATE
+  UPDATE
+  DELETE
+  STATUS_CHANGE
+  APPROVE
+  REJECT
+  REMOVE
+  ASSIGN
+  VOID
+  ACCEPT
+  LOGIN
+  LOGOUT
+  LOGIN_THROTTLED
+  CANCEL
+  COMPLETE
+}
+
+enum FundStatus {
+  DRAFT
+  ACTIVE
+  CLOSED
+}
+
+model Village {
+  id                       String                       @id @default(cuid())
+  villageCode              String                       @unique
+  name                     String
+  status                   VillageStatus                @default(ACTIVE)
+  createdAt                DateTime                     @default(now())
+  updatedAt                DateTime                     @updatedAt
+  users                    User[]
+  houses                   House[]
+  collectorAssignments     CollectorAssignment[]
+  financialLock            VillageFinancialWriteLock?
+  fundAssessments          FundHouseAssessment[]
+  fundExtensions           FundEndDateExtension[]
+  funds                    Fund[]
+  payments                 Payment[]
+  receipts                 Receipt[]
+  auditLogs                AuditLog[]
+  deactivationRequests     VillageDeactivationRequest[]
+  passwordRecoveryRequests PasswordRecoveryRequest[]
+  notifications            Notification[]
+
+  @@index([status])
+}
+
+model User {
+  id                            String                       @id @default(cuid())
+  villageId                     String?
+  village                       Village?                     @relation(fields: [villageId], references: [id], onDelete: Restrict)
+  settings                      UserSettings?
+  houseId                       String?
+  house                         House?                       @relation("HouseMembers", fields: [houseId], references: [id], onDelete: SetNull)
+  headedHouse                   House?                       @relation("HouseHead")
+  role                          UserRole                     @default(VILLAGER)
+  membershipStatus              MembershipStatus?
+  sessionVersion                Int                          @default(0)
+  name                          String
+  /// Unique per village (see @@unique below). SYSTEM_ADMIN rows have no
+  /// village; their uniqueness is enforced by partial unique indexes that
+  /// Prisma cannot model (see the per_village_identifiers migration).
+  email                         String?
+  phone                         String?
+  passwordHash                  String
+  /// True for a newly created Chief until the initial password is changed.
+  mustChangePassword            Boolean                      @default(false)
+  dateOfBirth                   DateTime?                    @db.Date
+  createdAt                     DateTime                     @default(now())
+  updatedAt                     DateTime                     @updatedAt
+  collectorAssignments          CollectorAssignment[]
+  closedFunds                   Fund[]                       @relation("FundCloser")
+  fundExtensions                FundEndDateExtension[]       @relation("FundExtensionActor")
+  paymentsAsPayer               Payment[]                    @relation("PaymentPayer")
+  paymentsAsCollector           Payment[]                    @relation("PaymentCollector")
+  auditLogs                     AuditLog[]                   @relation("AuditLogActor")
+  deactivationRequestsMade      VillageDeactivationRequest[] @relation("DeactivationRequester")
+  deactivationRequestsRejected  VillageDeactivationRequest[] @relation("DeactivationRejecter")
+  deactivationRequestsApproved  VillageDeactivationRequest[] @relation("DeactivationApprover")
+  deactivationRequestsCancelled VillageDeactivationRequest[] @relation("DeactivationCanceller")
+  recoveryRequestsAsTarget      PasswordRecoveryRequest[]    @relation("RecoveryTarget")
+  recoveryRequestsIssued        PasswordRecoveryRequest[]    @relation("RecoveryIssuer")
+  recoveryRequestsRejected      PasswordRecoveryRequest[]    @relation("RecoveryRejecter")
+  recoveryRequestsRevoked       PasswordRecoveryRequest[]    @relation("RecoveryRevoker")
+  notifications                 Notification[]
+
+  @@unique([villageId, email])
+  @@unique([villageId, phone])
+  @@index([villageId])
+  @@index([houseId])
+  @@index([role])
+  @@index([villageId, role])
+  @@index([villageId, membershipStatus])
+  @@index([villageId, houseId])
+  @@index([villageId, dateOfBirth])
+}
+
+model House {
+  id            String                @id @default(cuid())
+  villageId     String
+  village       Village               @relation(fields: [villageId], references: [id], onDelete: Restrict)
+  houseNumber   String
+  headOfHouseId String?               @unique
+  headOfHouse   User?                 @relation("HouseHead", fields: [headOfHouseId], references: [id], onDelete: SetNull)
+  members       User[]                @relation("HouseMembers")
+  isActive      Boolean               @default(true)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  assessments   FundHouseAssessment[]
+  payments      Payment[]
+
+  @@unique([id, villageId])
+  @@unique([villageId, houseNumber])
+  @@index([villageId])
+  @@index([isActive])
+  @@index([villageId, isActive])
+}
+
+model CollectorAssignment {
+  id        String   @id @default(cuid())
+  villageId String
+  village   Village  @relation(fields: [villageId], references: [id], onDelete: Restrict)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  year      Int
+  month     Int
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([villageId, userId, year, month])
+  @@index([villageId])
+  @@index([userId])
+  @@index([villageId, year, month])
+  @@index([villageId, isActive])
+  @@index([villageId, year, month, isActive])
+}
+
+model Fund {
+  id                  String                 @id @default(cuid())
+  villageId           String
+  village             Village                @relation(fields: [villageId], references: [id], onDelete: Restrict)
+  name                String
+  description         String?
+  villageTargetAmount Int
+  eligibleHouseCount  Int?
+  assessmentPerHouse  Int?
+  snapshotAt          DateTime?
+  termsVersion        Int                    @default(1)
+  closedAt            DateTime?
+  closedByUserId      String?
+  closedBy            User?                  @relation("FundCloser", fields: [closedByUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  assessments         FundHouseAssessment[]
+  extensions          FundEndDateExtension[]
+  auditLogs           AuditLog[]
+  startDate           DateTime               @db.Date
+  endDate             DateTime               @db.Date
+  status              FundStatus             @default(DRAFT)
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+  payments            Payment[]
+
+  @@unique([id, villageId])
+  @@index([villageId])
+  @@index([status])
+  @@index([villageId, status])
+  @@index([villageId, startDate, endDate])
+}
+
+model Payment {
+  id                    String              @id @default(cuid())
+  villageId             String
+  village               Village             @relation(fields: [villageId], references: [id], onDelete: Restrict)
+  fundId                String
+  fund                  Fund                @relation(fields: [fundId, villageId], references: [id, villageId], onDelete: Restrict, onUpdate: Restrict)
+  houseId               String
+  house                 House               @relation(fields: [houseId], references: [id], onDelete: Restrict)
+  fundHouseAssessmentId String
+  assessment            FundHouseAssessment @relation(fields: [fundHouseAssessmentId, fundId, houseId, villageId], references: [id, fundId, houseId, villageId], onDelete: Restrict, onUpdate: Restrict, map: "Payment_assessment_fkey")
+  payerUserId           String
+  payer                 User                @relation("PaymentPayer", fields: [payerUserId], references: [id], onDelete: Restrict)
+  collectorUserId       String?
+  collector             User?               @relation("PaymentCollector", fields: [collectorUserId], references: [id], onDelete: Restrict)
+  amount                Int
+  status                PaymentStatus       @default(ACCEPTED)
+  voidReason            String?
+  receipt               Receipt?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  @@unique([id, villageId])
+  @@index([fundHouseAssessmentId])
+  @@index([villageId])
+  @@index([fundId])
+  @@index([houseId])
+  @@index([payerUserId])
+  @@index([collectorUserId])
+  @@index([status])
+  @@index([fundId, houseId])
+  @@index([fundId, houseId, status])
+  @@index([villageId, status])
+}
+
+model Receipt {
+  id            String        @id @default(cuid())
+  receiptNumber String        @unique
+  paymentId     String        @unique
+  payment       Payment       @relation(fields: [paymentId, villageId], references: [id, villageId], onDelete: Restrict, onUpdate: Restrict)
+  villageId     String
+  village       Village       @relation(fields: [villageId], references: [id], onDelete: Restrict)
+  status        ReceiptStatus @default(ACTIVE)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@unique([paymentId, villageId])
+  @@index([villageId])
+  @@index([status])
+  @@index([villageId, status])
+}
+
+model AuditLog {
+  fundId      String?
+  fund        Fund?           @relation(fields: [fundId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  id          String          @id @default(cuid())
+  villageId   String?
+  village     Village?        @relation(fields: [villageId], references: [id], onDelete: SetNull)
+  actorUserId String?
+  actor       User?           @relation("AuditLogActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  actionType  AuditActionType
+  entityType  String
+  entityId    String?
+  metadata    Json?
+  createdAt   DateTime        @default(now())
+
+  @@index([fundId])
+  @@index([villageId])
+  @@index([actorUserId])
+  @@index([actionType])
+  @@index([entityType])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@index([villageId, createdAt])
+  @@index([villageId, actionType])
+}
+
+enum LanguagePreference {
+  EN
+  MY
+}
+
+model UserSettings {
+  id        String             @id @default(cuid())
+  userId    String             @unique
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  language  LanguagePreference @default(EN)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  @@index([userId])
+}
+
+/// Login brute-force throttle counters. Keys are HMAC hashes; no raw
+/// identifiers, user ids or IP addresses are stored. Rows are disposable.
+model LoginThrottleState {
+  id              String    @id @default(cuid())
+  scope           String
+  keyHash         String
+  attempts        Int       @default(0)
+  windowStartedAt DateTime
+  lockedUntil     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([scope, keyHash])
+  @@index([updatedAt])
+}
+
+enum DeactivationRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  COMPLETED
+}
+
+enum NotificationType {
+  DEACTIVATION_REQUESTED
+  DEACTIVATION_APPROVED
+  DEACTIVATION_REJECTED
+  DEACTIVATION_CANCELLED
+  DEACTIVATION_COMPLETED
+  DEACTIVATION_REMINDER
+  RECOVERY_REQUESTED
+  RECOVERY_REJECTED
+  RECOVERY_PASSWORD_CHANGED
+  RECOVERY_RESET_COMPLETED
+}
+
+/// One Chief-initiated request to deactivate a village, and everything that
+/// happened to it. The workflow state lives here, NOT in Village.status:
+/// read-only mode is "this village has an APPROVED request" (see
+/// docs/village-deactivation-design-notes.md). Rows are never deleted.
+///
+/// The partial unique index (one PENDING/APPROVED request per village) and the
+/// CHECK constraints (field shape per status, 24h countdown, non-blank
+/// reasons) cannot be expressed in Prisma. They are written by hand at the end
+/// of the village_deactivation migration, like the partial indexes in the
+/// per_village_identifiers migration.
+model VillageDeactivationRequest {
+  id                      String                    @id @default(cuid())
+  villageId               String
+  village                 Village                   @relation(fields: [villageId], references: [id], onDelete: Restrict)
+  requesterUserId         String
+  requester               User                      @relation("DeactivationRequester", fields: [requesterUserId], references: [id], onDelete: Restrict)
+  reason                  String
+  status                  DeactivationRequestStatus @default(PENDING)
+  rejectedByUserId        String?
+  rejectedBy              User?                     @relation("DeactivationRejecter", fields: [rejectedByUserId], references: [id], onDelete: Restrict)
+  rejectedAt              DateTime?
+  rejectionReason         String?
+  /// rejectedAt + the configured cooldown. A new request is refused until then.
+  cooldownEndsAt          DateTime?
+  approvedByUserId        String?
+  approvedBy              User?                     @relation("DeactivationApprover", fields: [approvedByUserId], references: [id], onDelete: Restrict)
+  approvedAt              DateTime?
+  /// Always approvedAt + 24 hours (enforced by a CHECK). Written once, never
+  /// recalculated.
+  scheduledDeactivationAt DateTime?
+  cancelledByUserId       String?
+  cancelledBy             User?                     @relation("DeactivationCanceller", fields: [cancelledByUserId], references: [id], onDelete: Restrict)
+  cancelledAt             DateTime?
+  cancellationReason      String?
+  completedAt             DateTime?
+  /// Who completed it, for example "SYSTEM:deactivation-worker".
+  completedBy             String?
+  processingAttempts      Int                       @default(0)
+  lastProcessingError     String?
+  lastProcessingAt        DateTime?
+  createdAt               DateTime                  @default(now())
+  updatedAt               DateTime                  @updatedAt
+  notifications           Notification[]
+
+  @@index([status, scheduledDeactivationAt])
+  @@index([villageId, status, cooldownEndsAt])
+  @@index([villageId, createdAt])
+  @@index([requesterUserId])
+}
+
+/// In-app notification. dedupeKey makes delivery idempotent: the same event for
+/// the same user can only be stored once, however often a retry runs. The text
+/// is not stored; it is rendered from i18n keys and params when read.
+model Notification {
+  id                String                      @id @default(cuid())
+  userId            String
+  user              User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  villageId         String?
+  village           Village?                    @relation(fields: [villageId], references: [id], onDelete: Restrict)
+  requestId         String?
+  request           VillageDeactivationRequest? @relation(fields: [requestId], references: [id], onDelete: Restrict)
+  /// Set only for RECOVERY_* types, and then requestId is NULL (a CHECK in the
+  /// password_recovery migration enforces this). Deactivation types keep using
+  /// requestId, so the two families never share a link column.
+  recoveryRequestId String?
+  recoveryRequest   PasswordRecoveryRequest?    @relation(fields: [recoveryRequestId], references: [id], onDelete: Restrict)
+  type              NotificationType
+  params            Json?
+  dedupeKey         String                      @unique
+  readAt            DateTime?
+  createdAt         DateTime                    @default(now())
+
+  @@index([userId, readAt, createdAt])
+  @@index([requestId])
+  @@index([recoveryRequestId])
+}
+
+enum PasswordRecoveryStatus {
+  PENDING
+  CODE_ISSUED
+  COMPLETED
+  REJECTED
+  EXPIRED
+  REVOKED
+}
+
+/// One password recovery request for one account, and everything that happened
+/// to it (Chief-issued one-time reset code). Rows are never deleted.
+///
+/// userId is the account being recovered. villageId is that account's village
+/// when it was filed (NULL for a SYSTEM_ADMIN). Who may act on the request is
+/// NOT stored: it is worked out from current data every time.
+///
+/// Only a hash of the code is stored (HMAC-SHA-256, 64 hex characters), and it
+/// is cleared as soon as the request leaves CODE_ISSUED. The raw code is never
+/// stored.
+///
+/// The partial unique index (one PENDING/CODE_ISSUED request per user) and the
+/// CHECK constraints (field shape per status, hash format, note length)
+/// cannot be expressed in Prisma. They are written by hand at the end of the
+/// password_recovery migration, like the deactivation migration.
+///
+/// Allowed transitions are NOT enforced by the database (a CHECK cannot see the
+/// previous row). The application enforces them with compare-and-set updates.
+model PasswordRecoveryRequest {
+  id                   String                 @id @default(cuid())
+  userId               String
+  user                 User                   @relation("RecoveryTarget", fields: [userId], references: [id], onDelete: Restrict)
+  villageId            String?
+  village              Village?               @relation(fields: [villageId], references: [id], onDelete: Restrict)
+  status               PasswordRecoveryStatus @default(PENDING)
+  /// While PENDING: after this instant the request can no longer be acted on.
+  requestExpiresAt     DateTime
+  /// HMAC-SHA-256 of the current code, lowercase hex. NULL unless CODE_ISSUED.
+  codeHash             String?
+  codeIssuedAt         DateTime?
+  /// After this instant the code no longer works.
+  codeExpiresAt        DateTime?
+  codeIssuedByUserId   String?
+  codeIssuedBy         User?                  @relation("RecoveryIssuer", fields: [codeIssuedByUserId], references: [id], onDelete: Restrict)
+  /// How many times a code was issued (a re-issue replaces the old code).
+  issueCount           Int                    @default(0)
+  /// Wrong codes submitted against this request.
+  failedRedeemAttempts Int                    @default(0)
+  rejectedByUserId     String?
+  rejectedBy           User?                  @relation("RecoveryRejecter", fields: [rejectedByUserId], references: [id], onDelete: Restrict)
+  rejectedAt           DateTime?
+  /// Optional short note for the member (at most 200 characters).
+  rejectionNote        String?
+  /// WITHDRAWN (by an authority, with a note), TOO_MANY_ATTEMPTS or
+  /// TARGET_INELIGIBLE (both by the system, so revokedByUserId stays NULL).
+  revocationReason     String?
+  revokedByUserId      String?
+  revokedBy            User?                  @relation("RecoveryRevoker", fields: [revokedByUserId], references: [id], onDelete: Restrict)
+  revokedAt            DateTime?
+  revocationNote       String?
+  expiredAt            DateTime?
+  completedAt          DateTime?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  notifications        Notification[]
+
+  @@index([status, requestExpiresAt])
+  @@index([villageId, status])
+  @@index([userId, createdAt])
+}
+
+/// SQL checks, partial indexes and triggers are in fund_financial_integrity.
+model FundHouseAssessment {
+  id                  String    @id @default(cuid())
+  fundId              String
+  houseId             String
+  villageId           String
+  assessmentAmount    Int
+  houseNumberSnapshot String
+  createdAt           DateTime  @default(now())
+  fund                Fund      @relation(fields: [fundId, villageId], references: [id, villageId], onDelete: Restrict, onUpdate: Restrict)
+  house               House     @relation(fields: [houseId, villageId], references: [id, villageId], onDelete: Restrict, onUpdate: Restrict)
+  village             Village   @relation(fields: [villageId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  payments            Payment[]
+
+  @@unique([fundId, houseId])
+  @@unique([id, fundId, houseId, villageId])
+  @@index([houseId])
+  @@index([villageId])
+}
+
+model FundEndDateExtension {
+  id                   String   @id @default(cuid())
+  fundId               String
+  villageId            String
+  previousEndDate      DateTime @db.Date
+  newEndDate           DateTime @db.Date
+  previousTermsVersion Int
+  newTermsVersion      Int
+  changedByUserId      String
+  changedAt            DateTime @default(now())
+  reason               String
+  fund                 Fund     @relation(fields: [fundId, villageId], references: [id, villageId], onDelete: Restrict, onUpdate: Restrict)
+  village              Village  @relation(fields: [villageId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  changedBy            User     @relation("FundExtensionActor", fields: [changedByUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([fundId, newTermsVersion])
+  @@index([villageId])
+  @@index([changedByUserId])
+}
+
+/// Internal per-village revision, maintained by restricted SQL functions.
+model VillageFinancialWriteLock {
+  villageId String  @id
+  village   Village @relation(fields: [villageId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  revision  BigInt  @default(0)
+}
+
+/// Transaction-local work persisted only until deferred validation succeeds.
+model FundFinancialValidationWork {
+  transactionId BigInt
+  scopeType     String
+  scopeId       String
+
+  @@id([transactionId, scopeType, scopeId])
+}
