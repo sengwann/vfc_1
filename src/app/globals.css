@@ -1,0 +1,450 @@
+@import "tailwindcss";
+
+/*
+ * Village Fund — design foundation ("ledger green")
+ *
+ * Direction: calm, paper-like neutrals, one deep forest-green brand colour,
+ * and four clearly separated status tones (success / warning / danger / info).
+ * Every text/background pair below was measured against WCAG AA (4.5:1 text,
+ * 3:1 for control borders, focus rings and status dots).
+ *
+ * Dark mode: Tailwind v4 ignores tailwind.config.ts. The dark tokens below
+ * apply when <html> has the `dark` class. That class is set before first paint
+ * by the inline script in src/app/layout.tsx and kept in sync by
+ * src/lib/theme/ (Light / Dark / System, saved per device in localStorage).
+ * `dark:` utilities are tied to that same class (see @custom-variant), so
+ * every surface follows the one switch.
+ */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ------------------------------------------------------------------ */
+/* Tokens — light                                                      */
+/* ------------------------------------------------------------------ */
+:root {
+  /* Surfaces */
+  --background: hsl(210 40% 98%);
+  --foreground: hsl(222 47% 11%);
+
+  --card: hsl(0 0% 100%);
+  --card-foreground: hsl(222 47% 11%);
+
+  --popover: hsl(0 0% 100%);
+  --popover-foreground: hsl(222 47% 11%);
+
+  --muted: hsl(210 40% 96%);
+  --muted-foreground: hsl(215 19% 35%);
+
+  /* Brand */
+  --primary: hsl(158 64% 24%);
+  --primary-hover: hsl(158 64% 20%);
+  --primary-foreground: hsl(0 0% 100%);
+
+  --secondary: hsl(210 40% 96%);
+  --secondary-foreground: hsl(222 47% 14%);
+
+  --accent: hsl(152 45% 94%);
+  --accent-foreground: hsl(158 64% 20%);
+
+  /* Lines and focus */
+  --border: hsl(214 32% 91%);
+  --border-strong: hsl(213 27% 84%);
+  --input: hsl(215 16% 57%);
+  --ring: hsl(158 64% 32%);
+
+  /* Destructive actions (solid) */
+  --destructive: hsl(0 72% 42%);
+  --destructive-hover: hsl(0 72% 36%);
+  --destructive-foreground: hsl(0 0% 100%);
+
+  /* Status tones: soft = background, strong = text/icon on soft,
+     border = outline on soft, base = dots / progress bars / solid fills */
+  --success: hsl(158 64% 30%);
+  --success-soft: hsl(152 50% 94%);
+  --success-border: hsl(152 40% 76%);
+  --success-strong: hsl(158 70% 20%);
+
+  --warning: hsl(38 92% 40%);
+  --warning-soft: hsl(45 95% 93%);
+  --warning-border: hsl(42 85% 70%);
+  --warning-strong: hsl(32 85% 24%);
+
+  --danger: hsl(0 72% 42%);
+  --danger-soft: hsl(0 86% 97%);
+  --danger-border: hsl(0 78% 82%);
+  --danger-strong: hsl(0 70% 36%);
+
+  --info: hsl(221 83% 45%);
+  --info-soft: hsl(214 95% 95%);
+  --info-border: hsl(213 85% 80%);
+  --info-strong: hsl(224 64% 36%);
+
+  --radius: 0.75rem;
+}
+
+/* ------------------------------------------------------------------ */
+/* Tokens — dark (applies only under .dark; see note at top)           */
+/* ------------------------------------------------------------------ */
+.dark {
+  --background: hsl(222 40% 7%);
+  --foreground: hsl(210 40% 96%);
+
+  --card: hsl(222 36% 10%);
+  --card-foreground: hsl(210 40% 96%);
+
+  --popover: hsl(222 36% 10%);
+  --popover-foreground: hsl(210 40% 96%);
+
+  --muted: hsl(222 28% 15%);
+  --muted-foreground: hsl(215 20% 70%);
+
+  --primary: hsl(152 56% 46%);
+  --primary-hover: hsl(152 56% 52%);
+  --primary-foreground: hsl(160 70% 8%);
+
+  --secondary: hsl(222 28% 15%);
+  --secondary-foreground: hsl(210 40% 96%);
+
+  --accent: hsl(158 40% 16%);
+  --accent-foreground: hsl(152 60% 85%);
+
+  --border: hsl(222 24% 20%);
+  --border-strong: hsl(222 20% 28%);
+  --input: hsl(215 14% 48%);
+  --ring: hsl(152 56% 52%);
+
+  --destructive: hsl(0 68% 52%);
+  --destructive-hover: hsl(0 68% 58%);
+  --destructive-foreground: hsl(0 0% 100%);
+
+  --success: hsl(152 56% 46%);
+  --success-soft: hsl(158 45% 14%);
+  --success-border: hsl(158 40% 28%);
+  --success-strong: hsl(152 60% 78%);
+
+  --warning: hsl(42 92% 56%);
+  --warning-soft: hsl(38 50% 14%);
+  --warning-border: hsl(38 55% 30%);
+  --warning-strong: hsl(42 92% 74%);
+
+  --danger: hsl(0 84% 66%);
+  --danger-soft: hsl(0 45% 16%);
+  --danger-border: hsl(0 50% 32%);
+  --danger-strong: hsl(0 90% 84%);
+
+  --info: hsl(214 90% 68%);
+  --info-soft: hsl(222 50% 18%);
+  --info-border: hsl(222 50% 34%);
+  --info-strong: hsl(214 95% 82%);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tailwind theme mapping                                              */
+/* `inline` keeps utilities pointing at the live variable, so a nested */
+/* .dark scope would also work.                                        */
+/* ------------------------------------------------------------------ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-destructive: var(--destructive);
+  --color-destructive-hover: var(--destructive-hover);
+  --color-destructive-foreground: var(--destructive-foreground);
+
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-border: var(--success-border);
+  --color-success-strong: var(--success-strong);
+
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-border: var(--warning-border);
+  --color-warning-strong: var(--warning-strong);
+
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-border: var(--danger-border);
+  --color-danger-strong: var(--danger-strong);
+
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-info-border: var(--info-border);
+  --color-info-strong: var(--info-strong);
+}
+
+@theme {
+  /*
+   * System font stack with Myanmar fallbacks. Latin text uses the platform UI
+   * font; Burmese glyphs fall through, per character, to the first installed
+   * Myanmar font (Windows: Myanmar Text, Apple: Myanmar Sangam MN, Android and
+   * Linux: Noto Sans Myanmar). No font files are downloaded.
+   */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", "Noto Sans", "Noto Sans Myanmar", "Myanmar Text",
+    "Myanmar Sangam MN", Pyidaungsu, Padauk, sans-serif;
+
+  /*
+   * Slightly taller line boxes. Burmese stacks vowels and tone marks above and
+   * below the line, and Tailwind's default 1.33–1.43 leading clips or crowds
+   * them. <html lang> is fixed to "en", so this cannot be limited to Burmese.
+   */
+  --text-xs--line-height: 1.5;
+  --text-sm--line-height: 1.6;
+  --text-base--line-height: 1.65;
+  --text-lg--line-height: 1.55;
+  --text-xl--line-height: 1.45;
+
+  /* Radius scale (rounded-lg stays 0.75rem as before) */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: var(--radius);
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+
+  /* Soft, cool shadows that stay quiet next to financial figures */
+  --shadow-xs: 0 1px 2px 0 hsl(222 47% 11% / 0.05);
+  --shadow-sm:
+    0 1px 3px 0 hsl(222 47% 11% / 0.07), 0 1px 2px -1px hsl(222 47% 11% / 0.05);
+  --shadow-md:
+    0 4px 8px -2px hsl(222 47% 11% / 0.08),
+    0 2px 4px -2px hsl(222 47% 11% / 0.05);
+}
+
+/* ------------------------------------------------------------------ */
+/* Base styles                                                         */
+/* Kept inside @layer base on purpose: unlayered rules beat every      */
+/* Tailwind utility, which flattened all coloured borders (border-red- */
+/* 200, border-amber-200, ...) and the layout's bg-slate-50.           */
+/* ------------------------------------------------------------------ */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    color-scheme: light;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Long IDs, names and Burmese strings wrap instead of overflowing. */
+    overflow-wrap: break-word;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+
+  p,
+  li {
+    text-wrap: pretty;
+  }
+
+  /* One visible focus style for everything keyboard-reachable. Outlines,
+     unlike box-shadow rings, remain visible in forced-colors mode. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background-color: var(--accent);
+    color: var(--accent-foreground);
+  }
+
+  a,
+  button,
+  summary,
+  [role="button"] {
+    touch-action: manipulation;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  @media print {
+    body {
+      background: #fff;
+      color: #000;
+    }
+    * {
+      box-shadow: none !important;
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Styled <select> (class `ui-select`, applied by <Select> in          */
+/* components/ui/field.tsx)                                            */
+/*                                                                     */
+/* Uses the platform's customizable select (`appearance: base-select`) */
+/* so the control stays a real <select>: same name/value/required/form */
+/* submission, keyboard and screen-reader behaviour. Browsers that do  */
+/* not support it ignore this whole block and keep the default list.   */
+/*                                                                     */
+/* Deliberately unlayered and scoped to `.ui-select` so that the       */
+/* placeholder colour and padding below win over the utility classes   */
+/* on the element; nothing here touches other controls.               */
+/* ------------------------------------------------------------------ */
+@supports (appearance: base-select) {
+  .ui-select,
+  .ui-select::picker(select) {
+    appearance: base-select;
+  }
+
+  /* Closed control: the field look comes from the utility classes; only the
+     cursor, arrow spacing and placeholder tone are set here. */
+  .ui-select {
+    cursor: pointer;
+    padding-right: 0.75rem;
+  }
+
+  .ui-select:disabled {
+    cursor: not-allowed;
+  }
+
+  /* Placeholder option selected (value="") reads as a hint, not a value. */
+  .ui-select:has(option[value=""]:checked) {
+    color: var(--muted-foreground);
+  }
+
+  .ui-select::picker-icon {
+    color: var(--muted-foreground);
+    transition: rotate 0.15s ease;
+  }
+
+  .ui-select:open::picker-icon {
+    rotate: 180deg;
+  }
+
+  /* The list panel */
+  .ui-select::picker(select) {
+    box-sizing: border-box;
+    margin-block: 0.25rem;
+    padding: 0.375rem;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-xl, 1rem);
+    background: var(--popover);
+    color: var(--popover-foreground);
+    box-shadow: var(
+      --shadow-md,
+      0 4px 8px -2px hsl(222 47% 11% / 0.08),
+      0 2px 4px -2px hsl(222 47% 11% / 0.05)
+    );
+    font: inherit;
+    max-block-size: min(18rem, 50dvh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  /* Rows: 44px touch targets, long (or Burmese) labels wrap. */
+  .ui-select option {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-block-size: 2.75rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius-md, 0.5rem);
+    color: var(--popover-foreground);
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+
+  .ui-select option:hover,
+  .ui-select option:focus {
+    background: var(--muted);
+  }
+
+  /* Outlines are clipped by the panel, so draw the keyboard ring inside the row. */
+  .ui-select option:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: -2px;
+  }
+
+  /* Selected row: tint + bold + checkmark, so it is not colour alone. */
+  .ui-select option:checked {
+    background: var(--accent);
+    color: var(--accent-foreground);
+    font-weight: 600;
+  }
+
+  .ui-select option::checkmark {
+    order: 1;
+    margin-inline-start: auto;
+    color: var(--primary);
+  }
+
+  .ui-select option:disabled {
+    color: var(--muted-foreground);
+    cursor: not-allowed;
+  }
+
+  .ui-select option:disabled:hover {
+    background: transparent;
+  }
+
+  /* Placeholder row: muted, never highlighted as a chosen value. */
+  .ui-select option[value=""]:checked {
+    background: transparent;
+    color: var(--muted-foreground);
+    font-weight: inherit;
+  }
+
+  .ui-select option[value=""]::checkmark {
+    display: none;
+  }
+
+  /* The global reduced-motion rule does not reach ::picker-icon. */
+  @media (prefers-reduced-motion: reduce) {
+    .ui-select::picker-icon {
+      transition: none;
+    }
+  }
+}

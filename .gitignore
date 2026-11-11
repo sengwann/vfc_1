@@ -1,3 +1,14 @@
+# Environment files. Broader than the .env / .env.* rules further down;
+# the !.env.example re-include in the block below must stay after this.
+.env*
+
+# Agent / editor tooling and Replit
+.agents/
+.claude/
+.cursor/
+.devin/
+.replit
+
 # Logs
 logs
 *.log
