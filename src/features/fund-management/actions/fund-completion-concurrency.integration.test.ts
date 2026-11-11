@@ -117,11 +117,11 @@ describe.skipIf(!enabled)("Phase 6 coordinated real-operation races",()=>{
       const secondContext:Context={client:other,attempts:0,transactions:[],onError: rejectedFirst ? async(error) => { expectScopeBusy(error); busy.open(); await retry.reached; } : undefined,actor:nextKind==="suspend"?"admin":"v",before:async(tx)=>{
         if(!rejectedFirst && secondContext.attempts===1){await tx.$queryRaw`SELECT id FROM "Village" WHERE id='v'`;snapshot.open();await committed.reached;}
       }};
-      const first=observe(b.request.run(firstContext,()=>operation(kind,next)));let second:ReturnType<typeof observe<unknown>>|undefined;
+      const first=observe<unknown>(b.request.run(firstContext,()=>operation(kind,next)));let second:ReturnType<typeof observe<unknown>>|undefined;
       try{
         await reach(held,first);
         await raw.query("BEGIN");await expect(raw.query(`SELECT vfc_acquire_villages(ARRAY['v'])`)).rejects.toMatchObject({code:"40001",message:"VFC_SCOPE_BUSY_RETRY_TRANSACTION"});await raw.query("ROLLBACK");
-        second=observe(b.request.run(secondContext,()=>operation(nextKind,next)));
+        second=observe<unknown>(b.request.run(secondContext,()=>operation(nextKind,next)));
         await reach(rejectedFirst ? busy : snapshot,second);
         release.open();const a=await first;
         if (rejectedFirst) {

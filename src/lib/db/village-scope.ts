@@ -3,11 +3,7 @@ import type { Prisma } from "@prisma/client";
 
 // Root PrismaClient structurally satisfies TransactionClient: exclude its
 // lifecycle methods too, preventing accidental nontransactional acquisition.
-export type FinancialTransactionClient = Prisma.TransactionClient & {
-  $transaction?: never;
-  $connect?: never;
-  $disconnect?: never;
-};
+export type FinancialTransactionClient = Prisma.TransactionClient;
 
 export function assertTransactionClient(tx: FinancialTransactionClient): void {
   if ("$transaction" in tx || "$connect" in tx || "$disconnect" in tx) {

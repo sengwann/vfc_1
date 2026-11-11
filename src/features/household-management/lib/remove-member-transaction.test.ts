@@ -293,6 +293,7 @@ describe("removeMemberAndDeactivateAssignments", () => {
       entityType: "COLLECTOR_ASSIGNMENT",
       entityId: "a-current",
       villageId: VILLAGE,
+      fundId: null,
       actorUserId: ACTOR,
       metadata: {
         year: 2026,

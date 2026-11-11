@@ -168,7 +168,7 @@ describe.skipIf(!enabled)("Phase 3F payment transactions", () => {
       let attempts = 0;
       boundary.after = async () => { written.open(); await release.reached; };
       identity(ordering === "payment-first" ? "collector" : "chief");
-      const first = observe(ordering === "payment-first" ? recordCashPaymentAction(form()) : deactivate());
+      const first = observe<unknown>(ordering === "payment-first" ? recordCashPaymentAction(form()) : deactivate());
       let second: ReturnType<typeof observe<unknown>> | undefined;
       try {
         await reached(written, first);
@@ -178,7 +178,7 @@ describe.skipIf(!enabled)("Phase 3F payment transactions", () => {
         boundary.client = other;
         boundary.before = async (tx) => { attempts++; if (attempts === 1) { await tx.$queryRaw`SELECT id FROM "Village" WHERE id='v'`; snapshot.open(); await committed.reached; } };
         identity(ordering === "payment-first" ? "chief" : "collector");
-        second = observe(ordering === "payment-first" ? deactivate() : recordCashPaymentAction(form()));
+        second = observe<unknown>(ordering === "payment-first" ? deactivate() : recordCashPaymentAction(form()));
         try {
           await reached(snapshot, second); release.open();
           const firstResult = await first;

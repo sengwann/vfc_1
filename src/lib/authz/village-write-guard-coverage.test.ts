@@ -5,13 +5,14 @@ import { describe, expect, it } from "vitest";
 /*
  * Mutation inventory for the Village Deactivation Workflow read-only rule.
  *
- * Every server action is either a village-scoped mutation that MUST call
- * guardVillageWrite inside its transaction (INVENTORY), or is deliberately
- * exempt with a reason (EXEMPT). A new server action fails this test until it
- * is classified on purpose, so a new write path cannot silently skip the
- * guard. This is a static scan: the behavior of the guard itself is covered by
- * village-deactivation-rules.test.ts, the action tests and the integration
- * tests.
+ * Every server action is either directly guarded, uses an explicitly mapped
+ * delegated service that enforces the guard inside its transaction, or is
+ * deliberately exempt with a reason. New server actions must be classified.
+ *
+ * Direct mutations are checked at the action boundary. Delegated mutations
+ * are checked across the action -> service -> transaction -> authorization
+ * path. The central financial authorization helper is also checked to ensure
+ * it invokes guardVillageWrite.
  */
 const INVENTORY = [
   // Payments
@@ -25,6 +26,7 @@ const INVENTORY = [
   "src/features/fund-management/actions/close-fund.action.ts",
   "src/features/fund-management/actions/create-fund.action.ts",
   "src/features/fund-management/actions/update-fund.action.ts",
+  "src/features/fund-management/actions/extend-fund.action.ts",
   // Houses
   "src/features/house-management/actions/create-house.action.ts",
   "src/features/house-management/actions/deactivate-house.action.ts",
@@ -85,6 +87,44 @@ const EXEMPT: Record<string, string> = {
     "Changes only the signed-in user's own read marks, never village records; it must work during read-only.",
 };
 
+const DELEGATED_MUTATIONS = [
+  {
+    action: "src/features/fund-management/actions/create-fund.action.ts",
+    importPath: "../lib/fund-write",
+    service: "src/features/fund-management/lib/fund-write.ts",
+    functionName: "createFundDraft",
+    authorization: "direct",
+  },
+  {
+    action: "src/features/fund-management/actions/update-fund.action.ts",
+    importPath: "../lib/fund-write",
+    service: "src/features/fund-management/lib/fund-write.ts",
+    functionName: "updateFundDraft",
+    authorization: "direct",
+  },
+  {
+    action: "src/features/fund-management/actions/activate-fund.action.ts",
+    importPath: "../lib/fund-write",
+    service: "src/features/fund-management/lib/fund-write.ts",
+    functionName: "activateFund",
+    authorization: "direct",
+  },
+  {
+    action: "src/features/fund-management/actions/extend-fund.action.ts",
+    importPath: "../lib/fund-completion",
+    service: "src/features/fund-management/lib/fund-completion.ts",
+    functionName: "extendFund",
+    authorization: "shared-current-fund",
+  },
+  {
+    action: "src/features/fund-management/actions/close-fund.action.ts",
+    importPath: "../lib/fund-completion",
+    service: "src/features/fund-management/lib/fund-completion.ts",
+    functionName: "closeFund",
+    authorization: "shared-current-fund",
+  },
+] as const;
+
 const ROOT = path.resolve(__dirname, "../../..");
 
 function listFiles(directory: string): string[] {
@@ -111,9 +151,24 @@ const serverActions = files.filter((file) =>
   /^\s*["']use server["']/m.test(file.text),
 );
 
+function sourceSection(
+  source: string,
+  declaration: string,
+): string | undefined {
+  const start = source.indexOf(declaration);
+  if (start < 0) return undefined;
+
+  const next = source.indexOf(
+    "\nexport async function ",
+    start + declaration.length,
+  );
+
+  return source.slice(start, next < 0 ? undefined : next);
+}
+
 describe("village mutation guard coverage", () => {
-  it("has exactly 21 inventoried mutation entry points", () => {
-    expect(new Set(INVENTORY).size).toBe(21);
+  it("has exactly 22 inventoried mutation entry points", () => {
+    expect(new Set(INVENTORY).size).toBe(22);
   });
 
   it("classifies every server action as guarded or deliberately exempt", () => {
@@ -136,14 +191,26 @@ describe("village mutation guard coverage", () => {
     expect(stale).toEqual([]);
   });
 
-  for (const file of INVENTORY) {
-    it(`${file} calls guardVillageWrite inside a transaction`, () => {
+  const delegatedActionPaths = new Set<string>(
+    DELEGATED_MUTATIONS.map((mutation) => mutation.action),
+  );
+
+  for (const file of INVENTORY.filter(
+    (entry) => !delegatedActionPaths.has(entry),
+  )) {
+    it(`${file} directly enforces the village guard inside a transaction`, () => {
       const text = files.find((candidate) => candidate.path === file)?.text;
 
       expect(text).toBeDefined();
-      expect(text).toMatch(/import \{[^}]*\b(?:guardVillageWrite|beginHouseholdWrite|authorizeFinancialTransaction)\b[^}]*\} from/);
+      expect(text).toMatch(
+        /import \{[^}]*\b(?:guardVillageWrite|beginHouseholdWrite|authorizeFinancialTransaction)\b[^}]*\} from/,
+      );
 
-      const call = Math.max(text!.indexOf("guardVillageWrite(tx,"), text!.indexOf("beginHouseholdWrite(tx,"), text!.indexOf("authorizeFinancialTransaction(tx,"));
+      const call = Math.max(
+        text!.indexOf("guardVillageWrite(tx,"),
+        text!.indexOf("beginHouseholdWrite(tx,"),
+        text!.indexOf("authorizeFinancialTransaction(tx,"),
+      );
       const transaction = text!.indexOf("$transaction(");
 
       expect(call).toBeGreaterThan(-1);
@@ -151,6 +218,87 @@ describe("village mutation guard coverage", () => {
       expect(call).toBeGreaterThan(transaction);
     });
   }
+
+  for (const mutation of DELEGATED_MUTATIONS) {
+    it(`${mutation.action} invokes ${mutation.functionName} from its service`, () => {
+      const actionText = files.find(
+        (candidate) => candidate.path === mutation.action,
+      )?.text;
+
+      expect(actionText).toBeDefined();
+      if (!actionText) return;
+
+      const imports = [
+        ...actionText.matchAll(
+          /import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/g,
+        ),
+      ];
+
+      const hasServiceImport = imports.some(
+        (match) =>
+          match[2] === mutation.importPath &&
+          match[1].split(",").some(
+            (name) => name.trim() === mutation.functionName,
+          ),
+      );
+
+      expect(hasServiceImport).toBe(true);
+      expect(actionText).toMatch(
+        new RegExp(`\\b${mutation.functionName}\\s*\\(`),
+      );
+    });
+
+    it(`${mutation.service} authorizes ${mutation.functionName} inside its transaction`, () => {
+      const serviceText = files.find(
+        (candidate) => candidate.path === mutation.service,
+      )?.text;
+
+      expect(serviceText).toBeDefined();
+      if (!serviceText) return;
+
+      const serviceFunction = sourceSection(
+        serviceText,
+        `export async function ${mutation.functionName}`,
+      );
+
+      expect(serviceFunction).toBeDefined();
+      if (!serviceFunction) return;
+
+      expect(serviceFunction).toMatch(
+        /withSerializableRetry\(\(\) => prisma\.\$transaction\(async \(tx\) => \{/,
+      );
+
+      if (mutation.authorization === "direct") {
+        expect(serviceFunction).toMatch(
+          /authorizeFinancialTransaction\(tx,/,
+        );
+      } else {
+        expect(serviceFunction).toMatch(/\bcurrentFund\(tx,/);
+
+        const sharedAuthorization = sourceSection(
+          serviceText,
+          "async function currentFund",
+        );
+
+        expect(sharedAuthorization).toBeDefined();
+        expect(sharedAuthorization).toMatch(
+          /authorizeFinancialTransaction\(tx,/,
+        );
+      }
+    });
+  }
+
+  it("routes financial authorization through guardVillageWrite", () => {
+    const authorityText = files.find(
+      (candidate) =>
+        candidate.path === "src/lib/authz/transaction-authority.ts",
+    )?.text;
+
+    expect(authorityText).toBeDefined();
+    expect(authorityText).toMatch(
+      /await guardVillageWrite\(tx,\s*request\.villageId\)/,
+    );
+  });
 
   it("keeps exactly one village guard: lockActiveVillage is gone", () => {
     const users = files
