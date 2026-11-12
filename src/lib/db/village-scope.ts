@@ -6,7 +6,15 @@ import type { Prisma } from "@prisma/client";
 export type FinancialTransactionClient = Prisma.TransactionClient;
 
 export function assertTransactionClient(tx: FinancialTransactionClient): void {
-  if (typeof tx.$queryRaw !== "function") {
+  const client = tx as unknown as {
+    $connect?: unknown;
+    $disconnect?: unknown;
+  };
+
+  if (
+    typeof client.$connect === "function" ||
+    typeof client.$disconnect === "function"
+  ) {
     throw new TypeError("An interactive transaction client is required");
   }
 }
@@ -24,7 +32,9 @@ export function orderedVillageIds(villageIds: readonly string[]): string[] {
     }
     const id = villageIds[index];
     if (typeof id !== "string" || id.trim().length === 0 || id.includes("\0")) {
-      throw new TypeError("Village IDs must be nonempty strings without NUL characters");
+      throw new TypeError(
+        "Village IDs must be nonempty strings without NUL characters",
+      );
     }
     validated.push(id);
   }
@@ -38,7 +48,8 @@ export async function acquireVillageScopes(
 ): Promise<void> {
   assertTransactionClient(tx);
   const ids = orderedVillageIds(villageIds);
-  if (ids.length === 0) throw new RangeError("At least one Village scope is required");
+  if (ids.length === 0)
+    throw new RangeError("At least one Village scope is required");
   // Single array parameter; cast PostgreSQL void for Prisma/pg decoding.
   await tx.$queryRaw`
     SELECT public.vfc_acquire_villages(${ids}::text[])::text AS lock
