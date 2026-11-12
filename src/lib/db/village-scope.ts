@@ -6,7 +6,7 @@ import type { Prisma } from "@prisma/client";
 export type FinancialTransactionClient = Prisma.TransactionClient;
 
 export function assertTransactionClient(tx: FinancialTransactionClient): void {
-  if ("$transaction" in tx || "$connect" in tx || "$disconnect" in tx) {
+  if (typeof tx.$queryRaw !== "function") {
     throw new TypeError("An interactive transaction client is required");
   }
 }
