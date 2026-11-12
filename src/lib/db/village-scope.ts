@@ -18,7 +18,6 @@ export function assertTransactionClient(tx: FinancialTransactionClient): void {
     throw new TypeError("An interactive transaction client is required");
   }
 }
-
 export function orderedVillageIds(villageIds: readonly string[]): string[] {
   if (!Array.isArray(villageIds)) {
     throw new TypeError("Village IDs must be supplied as an array");

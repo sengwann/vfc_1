@@ -20,7 +20,7 @@ export function TranslationProvider({
   children,
 }: {
   language: LanguagePreference;
-  children: ReactNode;
+  children?: ReactNode;
 }) {
   const t = (key: TranslationKey): string => getTranslation(language, key);
 
