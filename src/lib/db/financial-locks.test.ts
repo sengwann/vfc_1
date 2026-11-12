@@ -35,7 +35,19 @@ describe.each([
 
   it("rejects root clients before issuing locks", async () => {
     const query = vi.fn();
-    await expect(lock({ $queryRaw: query, $transaction: vi.fn() } as unknown as FinancialTransactionClient, [])).rejects.toThrow("interactive transaction client");
+    const transaction = vi.fn();
+    const root = {
+      $queryRaw: query,
+      $transaction: transaction,
+      $connect: vi.fn(),
+      $disconnect: vi.fn(),
+    };
+
+    await expect(
+      lock(root as unknown as FinancialTransactionClient, []),
+    ).rejects.toThrow("interactive transaction client");
+
     expect(query).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
   });
 });
