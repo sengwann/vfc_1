@@ -55,9 +55,20 @@ const REQUIRED_TABLES = [
 
 export async function openTestDatabase(
   env: Record<string, string | undefined> = process.env,
+  limits: { max?: number; connectionTimeoutMillis?: number } = {},
 ): Promise<TestDatabase> {
   const target = requireTestDatabaseTarget(env);
-  const pool = new Pool({ connectionString: target.url });
+  if (
+    (limits.max !== undefined &&
+      (!Number.isInteger(limits.max) || limits.max < 1 || limits.max > 10)) ||
+    (limits.connectionTimeoutMillis !== undefined &&
+      (!Number.isInteger(limits.connectionTimeoutMillis) ||
+        limits.connectionTimeoutMillis < 1000 ||
+        limits.connectionTimeoutMillis > 30_000))
+  ) {
+    throw new UnsafeTestDatabaseError("invalid connection pool limits.");
+  }
+  const pool = new Pool({ ...limits, connectionString: target.url });
   const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
   const close = async () => {
     await prisma.$disconnect();
@@ -88,7 +99,22 @@ export async function openTestDatabase(
       }
     }
   } catch (error) {
-    await close();
+    const failures: unknown[] = [error];
+    try {
+      await close();
+    } catch (cleanupError) {
+      failures.push(cleanupError);
+    }
+    try {
+      await pool.end();
+    } catch (cleanupError) {
+      failures.push(cleanupError);
+    }
+    if (failures.length > 1)
+      throw new AggregateError(
+        failures,
+        "Test database open and cleanup failed",
+      );
     throw error;
   }
 
