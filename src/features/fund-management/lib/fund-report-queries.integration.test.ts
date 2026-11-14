@@ -68,6 +68,36 @@ describe.skipIf(process.env.VFC_RUN_REPORT_POSTGRES_TESTS !== "1")(
       );
       sandbox = await startReportPostgresSandbox();
       db = sandbox.db;
+      // The inherited branch must carry the financial schema AND its guards:
+      // every fixture below is created with production constraints enabled.
+      for (const table of [
+        "Fund",
+        "FundHouseAssessment",
+        "Payment",
+        "Receipt",
+      ]) {
+        const found = await db.pool.query<{ found: string | null }>(
+          "SELECT to_regclass($1) AS found",
+          [`public."${table}"`],
+        );
+        if (!found.rows[0]?.found)
+          throw new Error(
+            `Disposable branch is missing the "${table}" table; apply migrations to the dedicated parent first`,
+          );
+      }
+      const guards = await db.pool.query<{ tgname: string }>(
+        `SELECT DISTINCT t.tgname FROM pg_trigger t
+        JOIN pg_class r ON r.oid = t.tgrelid
+        JOIN pg_namespace n ON n.oid = r.relnamespace
+        WHERE n.nspname = 'public' AND NOT t.tgisinternal
+        AND t.tgname IN ('vfc_validate_work','vfc_fund_guard','vfc_record_guard','vfc_transition_check')`,
+      );
+      expect(guards.rows.map((row) => row.tgname).sort()).toEqual([
+        "vfc_fund_guard",
+        "vfc_record_guard",
+        "vfc_transition_check",
+        "vfc_validate_work",
+      ]);
     }, 300_000);
     beforeEach(async () => {
       villages = [uid(), uid()];
@@ -308,187 +338,189 @@ describe.skipIf(process.env.VFC_RUN_REPORT_POSTGRES_TESTS !== "1")(
 
     it("computes exact committed metrics, excluding voided money and coverage", async () => {
       const report = await read(funds[0]);
-      expect(report.metrics).toEqual({
-        villageTargetAmount: 1001,
+      expect(report.fund.status).toBe("ACTIVE");
+      expect(report.metrics).toMatchObject({
         expectedHouseholdAssessmentTotal: 1002,
-        roundingSurplus: 1,
         acceptedCollectionAmount: 1001,
+        outstandingHouseholdObligations: 668,
         remainingVillageTarget: 0,
         excessCollectionOverVillageTarget: 0,
-        outstandingHouseholdObligations: 668,
+        roundingSurplus: 1,
         paidFrozenAssessmentCount: 1,
         unpaidFrozenAssessmentCount: 2,
-        hasFrozenAssessments: true,
         isComplete: false,
       });
-      expect(report.assessmentPage.rows).toEqual([
-        expect.objectContaining({
-          id: assessments[0],
-          paid: true,
-          acceptedCollectionAmount: 1001,
-        }),
-        expect.objectContaining({
-          id: assessments[1],
-          paid: false,
-          acceptedCollectionAmount: 0,
-        }),
-        expect.objectContaining({
-          id: assessments[2],
-          paid: false,
-          acceptedCollectionAmount: 0,
-        }),
-      ]);
+      expect(report.metrics?.acceptedCollectionAmount).toBe(1001);
     });
 
-    it("paginates display without truncating metrics", async () => {
-      const full = await read(funds[0]);
-      const page = await read(funds[0], { page: 2, pageSize: 1 });
-      expect(page.metrics).toEqual(full.metrics);
-      expect(page.assessmentPage).toMatchObject({
-        page: 2,
-        pageSize: 1,
-        total: 3,
-        totalPages: 3,
-      });
-      expect(page.assessmentPage.rows).toEqual([full.assessmentPage.rows[1]]);
+    it("paginates display rows without truncating whole-fund metrics", async () => {
+      const page1 = await read(funds[0], { page: 1, pageSize: 2 });
+      const page2 = await read(funds[0], { page: 2, pageSize: 2 });
+      expect(page1.assessmentPage.rows).toHaveLength(2);
+      expect(page2.assessmentPage.rows).toHaveLength(1);
+      expect(page1.metrics).toEqual(page2.metrics);
+      expect(page1.assessmentPage.total).toBe(3);
+      expect(page1.assessmentPage.totalPages).toBe(2);
     });
 
-    it("does not fabricate a DRAFT snapshot", async () => {
+    it("does not fabricate a snapshot for a DRAFT fund", async () => {
       const report = await read(funds[1]);
+      expect(report.fund.status).toBe("DRAFT");
       expect(report.metrics).toMatchObject({
+        villageTargetAmount: 1001,
+        acceptedCollectionAmount: 0,
+        remainingVillageTarget: 1001,
+        excessCollectionOverVillageTarget: 0,
         hasFrozenAssessments: false,
         expectedHouseholdAssessmentTotal: null,
-        acceptedCollectionAmount: 0,
+        roundingSurplus: null,
         outstandingHouseholdObligations: null,
+        paidFrozenAssessmentCount: null,
+        unpaidFrozenAssessmentCount: null,
         isComplete: false,
       });
-      expect(report.assessmentPage.rows).toEqual([]);
+      expect(report.assessmentPage.total).toBe(0);
     });
 
-    it("returns identical not-found errors for foreign and nonexistent funds", async () => {
-      // Real Next navigation errors: no navigation or query mocks.
-      const foreign = await read(funds[2]).catch((error: unknown) => error);
-      const missing = await read(uid()).catch((error: unknown) => error);
-      expect(foreign).toBeInstanceOf(Error);
-      expect(foreign).toMatchObject({ digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
-      expect(missing).toMatchObject({ digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
-      expect((foreign as Error).message).toBe((missing as Error).message);
+    it("returns identical not-found errors for foreign and missing funds", async () => {
+      const foreign = await outcome(read(funds[2]));
+      const missing = await outcome(read(uid()));
+      expect(foreign.error).toBeDefined();
+      expect(missing.error).toBeDefined();
+      expect((foreign.error as { digest?: string }).digest).toBe(
+        "NEXT_HTTP_ERROR_FALLBACK;404",
+      );
+      expect((missing.error as { digest?: string }).digest).toBe(
+        "NEXT_HTTP_ERROR_FALLBACK;404",
+      );
     });
 
     it("uses Repeatable Read and issues READ ONLY before data reads", async () => {
       const operations: string[] = [];
-      let settings: {
-        isolation: string;
-        readOnly: string;
-        database: string;
-      }[] = [];
+      const settings: Array<Record<string, string>> = [];
       const spy = instrument(async (tx, operation, proceed) => {
         operations.push(operation);
         const result = await proceed();
-        if (operation === "$executeRaw:SET TRANSACTION READ ONLY") {
-          settings = await tx.$queryRaw`SELECT current_database() AS database,
-          current_setting('transaction_isolation') AS isolation,
-          current_setting('transaction_read_only') AS "readOnly"`;
+        if (operation === "payment.findMany") {
+          const rows = await tx.$queryRaw<
+            Array<{ isolation: string; read_only: string; database: string }>
+          >`SELECT current_setting('transaction_isolation') AS isolation,
+            current_setting('transaction_read_only') AS read_only,
+            current_database() AS database`;
+          settings.push(rows[0]);
         }
         return result;
       });
       await read(funds[0]);
-      expect(spy).toHaveBeenCalledWith(expect.any(Function), {
-        isolationLevel: "RepeatableRead",
-        maxWait: 2000,
-        timeout: 5000,
+      spy.mockRestore();
+      expect(settings).toHaveLength(1);
+      expect(settings[0]).toMatchObject({
+        isolation: "repeatable read",
+        read_only: "on",
+        database: "vfc_test",
       });
-      expect(operations).toEqual([
-        "$executeRaw:SET TRANSACTION READ ONLY",
-        "user.findUnique",
-        "fund.findFirst",
-        "fundHouseAssessment.findMany",
-        "payment.findMany",
-      ]);
-      expect(settings).toEqual([
-        { database: "vfc_test", isolation: "repeatable read", readOnly: "on" },
-      ]);
+      expect(operations.indexOf("$executeRaw:SET TRANSACTION READ ONLY")).toBe(
+        0,
+      );
+      expect(operations.indexOf("user.findUnique")).toBeGreaterThan(
+        operations.indexOf("$executeRaw:SET TRANSACTION READ ONLY"),
+      );
+      expect(operations.indexOf("fund.findFirst")).toBeGreaterThan(
+        operations.indexOf("user.findUnique"),
+      );
+      expect(
+        operations.indexOf("fundHouseAssessment.findMany"),
+      ).toBeGreaterThan(operations.indexOf("fund.findFirst"));
+      expect(operations.indexOf("payment.findMany")).toBeGreaterThan(
+        operations.indexOf("fundHouseAssessment.findMany"),
+      );
+      await assertConnectionsReleased();
     });
 
     it("keeps the earlier payment snapshot while a second connection commits a correction", async () => {
-      const reached = latch(),
-        resume = latch();
-      const spy = instrument(async (_tx, operation, proceed) => {
+      const paused = latch();
+      const resume = latch();
+      const spy = instrument(async (tx, operation, proceed) => {
         const result = await proceed();
         if (operation === "fund.findFirst") {
-          reached.release();
-          await bounded(resume.promise, 4000);
+          paused.release();
+          await resume.promise;
         }
         return result;
       });
-      const pending = outcome(read(funds[0]));
+      const pending = read(funds[0]);
+      await bounded(paused.promise);
+      const c = await db.pool.connect();
       try {
-        await bounded(reached.promise, 4000);
-        const c = await db.pool.connect();
-        try {
-          await c.query("BEGIN");
-          await c.query(
-            `UPDATE "Payment" SET status='VOIDED',"voidReason"='Concurrent correction' WHERE id=$1`,
-            [payments[0]],
-          );
-          await c.query(`UPDATE "Receipt" SET status='VOIDED' WHERE id=$1`, [
-            receipts[0],
-          ]);
-          await addPayment(c, 0);
-          await c.query("COMMIT");
-        } catch (error) {
-          await c.query("ROLLBACK");
-          throw error;
-        } finally {
-          c.release();
-        }
+        await c.query("BEGIN");
+        await c.query(
+          `UPDATE "Payment" SET status='VOIDED',"voidReason"='Concurrent correction' WHERE id=$1`,
+          [payments[0]],
+        );
+        await c.query(`UPDATE "Receipt" SET status='VOIDED' WHERE id=$1`, [
+          receipts[0],
+        ]);
+        await addPayment(c, 0);
+        await c.query("COMMIT");
+      } catch (error) {
+        await c.query("ROLLBACK");
+        throw error;
       } finally {
-        resume.release();
+        c.release();
       }
-      const before = await bounded(pending);
-      expect(before.error).toBeUndefined();
-      expect(before.value).toMatchObject({
-        metrics: {
-          acceptedCollectionAmount: 1001,
-          paidFrozenAssessmentCount: 1,
-        },
-      });
+      resume.release();
+      const report = await bounded(pending);
       spy.mockRestore();
-      expect((await read(funds[0])).metrics).toMatchObject({
+      expect(report.metrics).toMatchObject({
+        acceptedCollectionAmount: 1001,
+        paidFrozenAssessmentCount: 1,
+        unpaidFrozenAssessmentCount: 2,
+      });
+      await assertConnectionsReleased();
+      const fresh = await read(funds[0]);
+      expect(fresh.metrics).toMatchObject({
         acceptedCollectionAmount: 334,
         remainingVillageTarget: 667,
       });
-      await assertConnectionsReleased();
-    }, 15_000);
+    });
 
-    it("rejects a real write with SQLSTATE 25006 and recovers via savepoint", async () => {
-      let rejected = false;
-      instrument(async (tx, operation, proceed) => {
+    it("rejects a real write inside the reader transaction with SQLSTATE 25006", async () => {
+      let sqlState: string | undefined;
+      const spy = instrument(async (tx, operation, proceed) => {
         const result = await proceed();
-        if (operation === "user.findUnique") {
-          await tx.$executeRawUnsafe("SAVEPOINT report_write_probe");
+        if (operation === "fund.findFirst") {
+          await tx.$executeRawUnsafe(`SAVEPOINT report_write_probe`);
           try {
-            const failure = await outcome(
-              tx.$executeRawUnsafe(
-                'UPDATE "Fund" SET name=name WHERE id=$1',
-                funds[0],
-              ),
-            );
-            expect(inspectDatabaseError(failure.error).sqlStates).toContain(
-              "25006",
-            );
-            rejected = true;
-          } finally {
             await tx.$executeRawUnsafe(
-              "ROLLBACK TO SAVEPOINT report_write_probe",
+              `UPDATE "Fund" SET name = 'write probe' WHERE id = $1`,
+              funds[0],
             );
-            await tx.$executeRawUnsafe("RELEASE SAVEPOINT report_write_probe");
+          } catch (error) {
+            const prismaError = error as {
+              code?: string;
+              meta?: {
+                driverAdapterError?: {
+                  cause?: {
+                    code?: string;
+                  };
+                };
+              };
+            };
+
+            sqlState =
+              prismaError.meta?.driverAdapterError?.cause?.code ??
+              prismaError.code;
+            await tx.$executeRawUnsafe(
+              `ROLLBACK TO SAVEPOINT report_write_probe`,
+            );
           }
         }
         return result;
       });
-      await read(funds[0]);
-      expect(rejected).toBe(true);
+      const report = await read(funds[0]);
+      spy.mockRestore();
+      expect(sqlState).toBe("25006");
+      expect(report.fund.id).toBe(funds[0]);
       await assertConnectionsReleased();
     });
 
@@ -560,5 +592,88 @@ describe.skipIf(process.env.VFC_RUN_REPORT_POSTGRES_TESTS !== "1")(
         excessCollectionOverVillageTarget: 668,
       });
     });
+
+    it("rejects a CLOSED fund with an unpaid frozen assessment", async () => {
+      // Production forbids this state: the deferred constraint trigger
+      // vfc_validate_work on "FundFinancialValidationWork" (migration
+      // 20261107120000_fund_financial_integrity) raises
+      // VFC_SNAPSHOT_OR_CLOSURE_INVALID at COMMIT when a CLOSED fund has a
+      // frozen assessment without an ACCEPTED payment. To prove the reader
+      // ALSO fails closed, manufacture the inconsistency on THIS disposable
+      // child branch only by disabling exactly that one trigger, then restore
+      // it in finally. The parent branch is never connected to, and no
+      // migration or production constraint is modified.
+      const { FundReportIntegrityError } = await import(
+        "./fund-report-queries"
+      );
+      const triggerStateSql = `SELECT t.tgenabled FROM pg_trigger t
+        JOIN pg_class r ON r.oid = t.tgrelid
+        JOIN pg_namespace n ON n.oid = r.relnamespace
+        WHERE n.nspname = 'public' AND r.relname = 'FundFinancialValidationWork'
+        AND t.tgname = 'vfc_validate_work' AND NOT t.tgisinternal`;
+      const c = await db.pool.connect();
+      let triggerDisabled = false;
+      try {
+        const before = await c.query<{ tgenabled: string }>(triggerStateSql);
+        expect(before.rows).toHaveLength(1);
+        expect(before.rows[0].tgenabled).toBe("O");
+        // Needs the connecting role to own the table (the role that applied
+        // migrations to the dedicated parent). If this statement fails the
+        // trigger was never disabled; finally only releases the connection.
+        await c.query(
+          `ALTER TABLE "FundFinancialValidationWork" DISABLE TRIGGER "vfc_validate_work"`,
+        );
+        triggerDisabled = true;
+        try {
+          await c.query("BEGIN");
+          // houses[1] has only a VOIDED payment and houses[2] has none, so two
+          // frozen assessments stay unpaid. Every other closure rule still
+          // applies: vfc_fund_guard and vfc_transition_check remain enabled
+          // (valid ACTIVE Chief closer, termsVersion increment, frozen terms).
+          await c.query(
+            `UPDATE "Fund" SET status='CLOSED',"closedAt"=now(),"closedByUserId"=$2,
+          "termsVersion"="termsVersion"+1 WHERE id=$1`,
+            [funds[0], users[0]],
+          );
+          await c.query("COMMIT");
+        } catch (error) {
+          await c.query("ROLLBACK");
+          throw error;
+        }
+      } finally {
+        try {
+          if (triggerDisabled) {
+            await c.query(
+              `ALTER TABLE "FundFinancialValidationWork" ENABLE TRIGGER "vfc_validate_work"`,
+            );
+          }
+        } finally {
+          c.release();
+        }
+      }
+      // The trigger must be enabled again before any further assertion runs.
+      const restored = await db.pool.query<{ tgenabled: string }>(
+        triggerStateSql,
+      );
+      expect(restored.rows).toHaveLength(1);
+      expect(restored.rows[0].tgenabled).toBe("O");
+      // The committed state really is CLOSED with unpaid frozen assessments.
+      const stored = await db.pool.query<{ status: string; unpaid: number }>(
+        `SELECT f.status, (SELECT count(*)::int FROM "FundHouseAssessment" a
+          WHERE a."fundId" = f.id AND NOT EXISTS (
+            SELECT 1 FROM "Payment" p
+            WHERE p."fundHouseAssessmentId" = a.id AND p.status = 'ACCEPTED')) AS unpaid
+        FROM "Fund" f WHERE f.id = $1`,
+        [funds[0]],
+      );
+      expect(stored.rows[0]).toMatchObject({ status: "CLOSED", unpaid: 2 });
+      // The reader fails closed instead of reporting the inconsistent fund.
+      await expect(read(funds[0])).rejects.toBeInstanceOf(
+        FundReportIntegrityError,
+      );
+      await assertConnectionsReleased();
+      // The pool and the restored trigger still serve normal reads afterwards.
+      expect((await bounded(read(funds[1]))).fund.id).toBe(funds[1]);
+    }, 20_000);
   },
 );

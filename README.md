@@ -108,6 +108,8 @@ Open [http://localhost:5000](http://localhost:5000) in your browser.
 | `npm run typecheck` | Run the TypeScript type checker |
 | `npm test` | Run the Vitest test suite once |
 | `npm run test:watch` | Run Vitest in watch mode |
+| `npm run test:integration` | Run integration suites serially; every suite stays skipped unless its own opt-in environment is set |
+| `npm run db:test:prepare` | Apply committed migrations to the validated disposable `TEST_DATABASE_URL` target (never `DATABASE_URL`) |
 | `npm run admin:reset-password -- --email <admin email> --yes` | Last-resort reset for a System Admin (temporary password, forced change) |
 | `npm run db:generate` | Generate Prisma Client |
 | `npm run db:migrate` | Run development database migrations |
@@ -142,6 +144,70 @@ npm run build
 
 A command may require a configured database or environment variables. Report any check that was not run; do not assume it passed.
 
+## Fund Report PostgreSQL Integration Tests
+
+`src/features/fund-management/lib/fund-report-queries.integration.test.ts` verifies the Chief fund report reader against a **real PostgreSQL database**: Repeatable Read snapshot stability during concurrent payment corrections, `READ ONLY` enforcement (a real write must fail with SQLSTATE `25006`), connection-acquisition and transaction timeouts, connection cleanup and recovery, exact whole-fund metrics, pagination that never truncates metrics, CLOSED-fund completeness, and fail-closed rejection of a CLOSED fund with unpaid frozen assessments. Mocked unit tests (`npm test`) cover the same reader without a database; only this suite proves the PostgreSQL runtime behavior.
+
+### Safety model
+
+- The suite is **opt-in only**. Without the environment below, all of its tests are skipped and no network or database access happens.
+- It uses a **dedicated disposable Neon child branch** created fresh for each run (`vfc-report-<uuid>`, unprotected, read/write endpoint). It never connects to the parent branch, never touches `DATABASE_URL`, and refuses to run when `NODE_ENV=production`.
+- Connections use `sslmode=verify-full` against the verified child endpoint, and the server-confirmed database, role and application name must match before any test runs.
+- The CLOSED-with-unpaid test temporarily disables **exactly one** validation trigger (`vfc_validate_work` on `"FundFinancialValidationWork"`) **on the disposable child only**, re-enables it in a `finally` block, and verifies it is enabled again. No migration, parent branch or production constraint is ever modified.
+
+### One-time parent preparation
+
+1. In a **dedicated Neon project** for report testing, create a **non-default, non-primary** branch (for example `report-test-parent`). The sandbox refuses default or primary parents.
+2. On that branch, make sure the database `vfc_test` and the role you will configure as `NEON_REPORT_DB_ROLE` exist.
+3. Apply the committed migrations **with that same role** so it owns the financial tables (the trigger toggle in the CLOSED-with-unpaid test requires table ownership):
+
+   ```bash
+   DATABASE_URL="postgresql://ROLE:PASSWORD@PARENT_HOST:5432/vfc_test?sslmode=verify-full" npm run db:deploy
+   ```
+
+   `npm run db:deploy` runs `prisma migrate deploy`, which only applies pending migrations. Re-run this step whenever new migrations land. The test sandbox itself never applies migrations and never logs in to the parent.
+
+### Required environment
+
+Set these in your shell or Replit Secrets (never commit real values):
+
+| Variable | Meaning |
+| --- | --- |
+| `VFC_RUN_REPORT_POSTGRES_TESTS` | Must be `1` to execute the suite |
+| `TEST_DATABASE_ALLOW_REMOTE` | Must be `1` to allow the remote disposable branch |
+| `NEON_REPORT_API_KEY` | Neon API key scoped to the dedicated report project (secret) |
+| `NEON_REPORT_PROJECT_ID` | Dedicated project id |
+| `NEON_REPORT_PROJECT_NAME` | Dedicated project name (must match exactly) |
+| `NEON_REPORT_PARENT_BRANCH_ID` | Dedicated non-default parent branch id |
+| `NEON_REPORT_PARENT_BRANCH_NAME` | Parent branch name (must match exactly) |
+| `NEON_REPORT_DB_ROLE` | Role present on the parent and child; owns the migrated tables |
+| `NEON_REPORT_DB_PASSWORD` | Password for that role (secret) |
+
+`NODE_ENV` must not be `production`.
+
+### Run
+
+```bash
+VFC_RUN_REPORT_POSTGRES_TESTS=1 \
+TEST_DATABASE_ALLOW_REMOTE=1 \
+NEON_REPORT_API_KEY="<secret>" \
+NEON_REPORT_PROJECT_ID="<project-id>" \
+NEON_REPORT_PROJECT_NAME="<project-name>" \
+NEON_REPORT_PARENT_BRANCH_ID="<parent-branch-id>" \
+NEON_REPORT_PARENT_BRANCH_NAME="<parent-branch-name>" \
+NEON_REPORT_DB_ROLE="<role>" \
+NEON_REPORT_DB_PASSWORD="<secret>" \
+npx vitest run --no-file-parallelism src/features/fund-management/lib/fund-report-queries.integration.test.ts
+```
+
+`npm run test:integration` also works: it runs every integration suite serially, and each suite without its own opt-in stays skipped.
+
+### Cleanup, failures and orphaned branches
+
+- After the run (pass or fail), the sandbox closes Prisma and the pool with bounded waits, re-verifies it still owns the child branch (id, project, parent, name, creation time, non-default, unprotected), deletes it, and confirms deletion by polling for `404` (bounded to 20 s).
+- If creation succeeded but the response was lost, the suite **refuses to guess-delete by name**. It reports the run name, project and parent so you can recover manually: in the Neon console, open the dedicated project, find the branch named `vfc-report-<uuid>` whose parent is your dedicated parent branch, verify those identifiers, and delete only that branch. Never delete the parent or the default branch.
+- If deletion or connection cleanup fails, the suite throws an `AggregateError` containing the branch identifiers for the same manual recovery. The parent branch is never modified or deleted by the tests.
+
 ## Important Security and Data Rules
 
 VFC handles user accounts and financial records. Changes in these areas require extra care:
@@ -161,7 +227,7 @@ There is no email or SMS reset. Recovery is vouched for by a person:
 
 1. The member opens **Forgot password?** on the sign-in page and files a request. The answer is always the same, whether or not the account exists.
 2. Their village Chief is notified. A Chief's own request, or a request from a village with no active Chief, goes to the System Admins. A System Admin's request goes to a different System Admin.
-3. The approver confirms who the member is in person or by phone, re-enters their own password, and issues a one-time code (valid 72 hours, shown once). They can also reject the request or withdraw a live code.
+3. The approver confirms who the member is in person or by phone, re-enters their own password, and issues a one-time code (valid 72 hours, shown once). They can also reject a request or withdraw a live code.
 4. The member enters the code on **Reset password** and chooses a new password. All their sessions end, and a notice tells them their password changed, when, and by whom.
 
 A request that nobody answers expires after 7 days. The **last** System Admin has nobody to approve them, so use `npm run admin:reset-password` on the server instead.
