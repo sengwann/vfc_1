@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { AuditActionType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { AuditEntityType } from "@/lib/audit";
+import { withChiefFundHistorySnapshot } from "@/features/fund-management/lib/fund-lifecycle-history";
 import { AUDIT_PAGE_SIZE, type AuditFilters } from "./audit-filters";
 
 export interface AuditLogListItem {
@@ -12,6 +13,7 @@ export interface AuditLogListItem {
   entityId: string | null;
   createdAt: Date;
   actorName: string | null;
+  fundId?: string | null;
 }
 
 export interface PlatformAuditLogListItem {
@@ -31,18 +33,13 @@ export interface AuditLogDetail {
   metadata: unknown;
   createdAt: Date;
   actorName: string | null;
+  fundId?: string | null;
 }
 
 export interface PlatformAuditLogDetail extends AuditLogDetail {
   villageId: string | null;
   villageCode: string | null;
   villageName: string | null;
-}
-
-function getEndOfDay(date: Date): Date {
-  const end = new Date(date);
-  end.setUTCHours(23, 59, 59, 999);
-  return end;
 }
 
 function buildWhereClause(
@@ -56,15 +53,11 @@ function buildWhereClause(
   if (filters.entityType) {
     where.entityType = filters.entityType;
   }
-  if (filters.dateFrom || filters.dateTo) {
-    const createdAt: Prisma.DateTimeFilter = {};
-    if (filters.dateFrom) {
-      createdAt.gte = filters.dateFrom;
-    }
-    if (filters.dateTo) {
-      createdAt.lte = getEndOfDay(filters.dateTo);
-    }
-    where.createdAt = createdAt;
+  // Fail closed even if a caller bypasses the page's validation recovery.
+  if (!filters.dateRange.ok) throw new RangeError("Invalid audit date range.");
+  const { gte, lt } = filters.dateRange;
+  if (gte || lt) {
+    where.createdAt = { ...(gte ? { gte } : {}), ...(lt ? { lt } : {}) };
   }
   return where;
 }
@@ -88,6 +81,7 @@ export async function getChiefAuditLogs(params: {
         actionType: true,
         entityType: true,
         entityId: true,
+        fundId: true,
         createdAt: true,
         actor: { select: { name: true } },
       },
@@ -100,6 +94,7 @@ export async function getChiefAuditLogs(params: {
     actionType: row.actionType,
     entityType: row.entityType,
     entityId: row.entityId,
+    fundId: row.fundId,
     createdAt: row.createdAt,
     actorName: row.actor?.name ?? null,
   }));
@@ -176,6 +171,7 @@ export async function getChiefAuditDetail(params: {
     select: {
       id: true,
       villageId: true,
+      fundId: true,
       actionType: true,
       entityType: true,
       entityId: true,
@@ -188,6 +184,7 @@ export async function getChiefAuditDetail(params: {
     return null;
   }
   return {
+    fundId: audit.fundId,
     id: audit.id,
     actionType: audit.actionType,
     entityType: audit.entityType,
@@ -236,4 +233,19 @@ export async function getPlatformAuditDetail(params: {
       audit.village?.name ??
       (typeof metadata.name === "string" ? metadata.name : null),
   };
+}
+
+/** Authenticated Fund scope is independent of all browser filters. */
+export function getChiefFundAuditLogs(fundId: string, filters: AuditFilters) {
+  return withChiefFundHistorySnapshot(fundId, async (tx, fund, villageId) => {
+    if (!Number.isSafeInteger(filters.page) || filters.page < 1 || !Number.isSafeInteger((filters.page - 1) * AUDIT_PAGE_SIZE)) throw new RangeError("Invalid audit page.");
+    const where: Prisma.AuditLogWhereInput = { AND: [{ villageId, fundId: fund.id }, buildWhereClause({}, filters)] };
+    const [rows, total] = await Promise.all([
+      tx.auditLog.findMany({ where, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: AUDIT_PAGE_SIZE, skip: (filters.page - 1) * AUDIT_PAGE_SIZE,
+        select: { id: true, fundId: true, actionType: true, entityType: true, entityId: true, createdAt: true, actor: { select: { name: true } } } }),
+      tx.auditLog.count({ where }),
+    ]);
+    const logs: AuditLogListItem[] = rows.map((row) => ({ id: row.id, fundId: row.fundId, actionType: row.actionType, entityType: row.entityType, entityId: row.entityId, createdAt: row.createdAt, actorName: row.actor?.name ?? null }));
+    return { fund: { id: fund.id, name: fund.name }, logs, total, totalPages: Math.max(1, Math.ceil(total / AUDIT_PAGE_SIZE)) };
+  });
 }

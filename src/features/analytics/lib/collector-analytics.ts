@@ -19,6 +19,15 @@ export interface CollectorChartData {
   collectionOverTime: MonthlyCollection[];
 }
 
+/** Lifetime accepted totals only; caller supplies its authenticated village/collector. */
+export async function getCollectorCollectionSummary(villageId: string, collectorUserId: string): Promise<CollectorCollectionSummary> {
+  const result = await prisma.payment.aggregate({
+    where: { villageId, collectorUserId, status: PaymentStatus.ACCEPTED },
+    _sum: { amount: true }, _count: { id: true },
+  });
+  return { totalCollected: result._sum.amount ?? 0, acceptedCount: result._count.id };
+}
+
 const MONTH_LABELS = [
   "Jan",
   "Feb",

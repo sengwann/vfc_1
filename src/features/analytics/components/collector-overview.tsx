@@ -2,18 +2,10 @@
 
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Section } from "@/components/ui/section";
 import { useTranslation } from "@/lib/i18n/provider";
 import { formatAmount } from "@/lib/utils";
-import type { CollectorChartData } from "../lib/collector-analytics";
-import { CollectionTrendChart } from "./collection-trend-chart";
+import type { CollectorCollectionSummary } from "../lib/collector-analytics";
 import type { CollectorDashboardData } from "./dashboard-types";
 import { fill } from "./fill";
 import { StatCard } from "./stat-card";
@@ -39,9 +31,9 @@ export function CollectorOverview({
         <StatCard
           label={t("dashboard.collector.accepted")}
           tone="success"
-          value={data.acceptedCount}
+          value={data.lifetimeAcceptedCount}
         />
-        </div>
+      </div>
       <div className="flex flex-col gap-2 sm:flex-row">
         <Button asChild className="w-full sm:w-auto" variant="outline">
           <Link href="/village/cash">{t("dashboard.collector.record")}</Link>
@@ -51,7 +43,7 @@ export function CollectorOverview({
   );
 }
 
-export function CollectorInsights({ data }: { data: CollectorChartData }) {
+export function CollectorInsights({ data }: { data: CollectorCollectionSummary }) {
   const { t } = useTranslation();
 
   return (
@@ -60,16 +52,13 @@ export function CollectorInsights({ data }: { data: CollectorChartData }) {
         <StatCard
           label={t("dashboard.collector.totalCollected")}
           tone="success"
-          value={formatAmount(data.summary.totalCollected)}
+          value={formatAmount(data.totalCollected)}
         />
         <StatCard
           label={t("dashboard.collector.completed")}
-          value={data.summary.acceptedCount}
+          value={data.acceptedCount}
         />
-        </div>
-
-      <div className="grid gap-3 lg:grid-cols-2">
-        </div>
+      </div>
     </Section>
   );
 }

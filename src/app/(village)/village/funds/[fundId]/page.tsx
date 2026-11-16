@@ -1,9 +1,13 @@
 import { notFound } from "next/navigation";
-import { FundStatus, PaymentStatus } from "@prisma/client";
+import { FundStatus } from "@prisma/client";
+import { FundChangedRecovery } from "@/features/fund-management/components/fund-changed-recovery";
 import { FundDetailView } from "@/features/fund-management/components/fund-detail-view";
 import { FundLifecycleActions } from "@/features/fund-management/components/fund-lifecycle-actions";
 import { PaymentStatusSearchSection } from "@/features/fund-management/components/payment-status-search";
-import { requireChief, requireSameVillage } from "@/lib/authz";
+import { requireChief } from "@/lib/authz";
+import { getChiefFundReport } from "@/features/fund-management/lib/fund-report-queries";
+import { getChiefFundLifecycleHistory } from "@/features/fund-management/lib/fund-lifecycle-history";
+import { FundLifecycleHistoryPanel } from "@/features/fund-management/components/fund-lifecycle-history";
 import { prisma } from "@/lib/prisma";
 
 export const metadata = {
@@ -51,36 +55,15 @@ export default async function FundDetailPage({
     notFound();
   }
 
-  const fund = await prisma.fund.findUnique({
-    where: { id: fundId },
-    select: {
-      id: true,
-      villageId: true,
-      name: true,
-      description: true,
-      villageTargetAmount: true,
-      termsVersion: true,
-      startDate: true,
-      endDate: true,
-      status: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-  });
-  if (!fund) {
-    notFound();
+  const sp = await resolveSearchParams(searchParams);
+  const history = await getChiefFundLifecycleHistory(fundId, sp.before);
+  const fund = history.fund;
+  const report = await getChiefFundReport(fundId);
+  // Do not combine a fresh financial version with stale dates/lifecycle controls.
+  // A subsequent request can reload metadata if an activation/extension/closure raced this read.
+  if (fund.id !== report.fund.id || fund.villageId !== report.fund.villageId || fund.termsVersion !== report.fund.termsVersion || fund.status !== report.fund.status) {
+    return <FundChangedRecovery retryHref={`/village/funds/${encodeURIComponent(fund.id)}`} />;
   }
-  requireSameVillage(context, fund.villageId);
-
-  const summary = await prisma.payment.aggregate({
-    where: {
-      fundId: fund.id,
-      villageId: context.villageId,
-      status: PaymentStatus.ACCEPTED,
-    },
-    _sum: { amount: true },
-    _count: { id: true },
-  });
 
   let hasOtherActiveFund = false;
   if (fund.status === FundStatus.DRAFT) {
@@ -92,68 +75,22 @@ export default async function FundDetailPage({
   }
 
   // Display hints only. Mutation transactions repeat these checks under locks.
-  const unpaidCount = fund.status === FundStatus.DRAFT ? undefined : await prisma.fundHouseAssessment.count({
-    where: { fundId: fund.id, villageId: context.villageId, payments: { none: { status: PaymentStatus.ACCEPTED } } },
-  });
+  const unpaidCount = report.metrics.unpaidFrozenAssessmentCount ?? undefined;
+  // Use the validated DATE label, not a new Fund row read: an extension after
+  // the report snapshot must not change expiry for the version being displayed.
+  const endDate = fund.endDate.toISOString().slice(0, 10);
   const [window] = await prisma.$queryRaw<{ expired: boolean }[]>`
-    SELECT public.vfc_fund_expired("endDate",clock_timestamp()) AS expired
-    FROM public."Fund" WHERE id=${fund.id} AND "villageId"=${context.villageId}`;
-
-  const collectedAmount = summary._sum.amount ?? 0;
-  const acceptedCount = summary._count.id;
-
-  // Existing payment-status search by ?q= (kept unchanged; its result is not
-  // rendered by this page. See "Remaining issues" in the report).
-  const sp = await resolveSearchParams(searchParams);
-  const rawQuery = typeof sp.q === "string" ? sp.q : "";
-  const query = rawQuery.trim();
-
-  let paymentStatusResults: {
-    id: string;
-    houseNumber: string;
-    headName: string | null;
-    paid: boolean;
-  }[] = [];
-
-  if (query) {
-    const matchedHouses = await prisma.house.findMany({
-      where: {
-        villageId: context.villageId,
-        OR: [
-          { houseNumber: { contains: query, mode: "insensitive" } },
-          { headOfHouse: { name: { contains: query, mode: "insensitive" } } },
-        ],
-      },
-      orderBy: { houseNumber: "asc" },
-      select: {
-        id: true,
-        houseNumber: true,
-        headOfHouse: { select: { name: true } },
-        payments: {
-          where: { fundId: fund.id, status: PaymentStatus.ACCEPTED },
-          select: { id: true },
-          take: 1,
-        },
-      },
-    });
-    paymentStatusResults = matchedHouses.map((house) => ({
-      id: house.id,
-      houseNumber: house.houseNumber,
-      headName: house.headOfHouse?.name ?? null,
-      paid: house.payments.length > 0,
-    }));
-  }
+    SELECT public.vfc_fund_expired(${endDate}::date,clock_timestamp()) AS expired`;
 
   return (
     <FundDetailView
-      acceptedCount={acceptedCount}
-      collectedAmount={collectedAmount}
+      history={<FundLifecycleHistoryPanel history={history} />}
+      metrics={report.metrics}
       fund={{
         id: fund.id,
         name: fund.name,
         description: fund.description,
         status: fund.status,
-        targetAmount: fund.villageTargetAmount,
         startDate: fund.startDate.toISOString(),
         endDate: fund.endDate.toISOString(),
         createdAt: fund.createdAt.toISOString(),
@@ -165,7 +102,7 @@ export default async function FundDetailPage({
           termsVersion={fund.termsVersion}
           unpaidCount={unpaidCount}
           expired={window?.expired ?? false}
-          endDate={fund.endDate.toISOString().slice(0, 10)}
+          endDate={endDate}
           lifecycleError={typeof sp.lifecycleError === "string" ? sp.lifecycleError : undefined}
           activationError={typeof sp.activationError === "string" ? sp.activationError : undefined}
           hasOtherActiveFund={hasOtherActiveFund}

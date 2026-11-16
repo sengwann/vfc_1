@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { en } from "@/lib/i18n/en";
+import { getT } from "@/lib/i18n/translations";
 
 import {
   formatMetadataValue,
@@ -81,3 +82,14 @@ describe("deactivation audit labels", () => {
     expect(formatMetadataValue(t, "outcome", "OTHER")).toBe("OTHER");
   });
 });
+
+for (const language of ["EN", "MY"] as const) {
+  it(`localizes financial lifecycle evidence in ${language}`, () => {
+    const translate = getT(language);
+    expect(getEntityLabel(translate, "FUND_END_DATE_EXTENSION")).toBe(translate("audit.entity.fundExtension"));
+    expect(getEntityLabel(translate, "FUND_HOUSE_ASSESSMENT")).toBe(translate("audit.entity.fundAssessment"));
+    expect(getMetadataKeyLabel(translate, "previousEndDate")).toBe(translate("audit.meta.previousEndDate"));
+    expect(formatMetadataValue(translate, "event", "FUND_CLOSED")).toBe(translate("audit.event.FUND_CLOSED"));
+    expect(formatMetadataValue(translate, "closedAt", "2026-11-02T12:00:00Z")).toContain("06:30");
+  });
+}

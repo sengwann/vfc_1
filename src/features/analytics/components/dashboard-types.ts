@@ -1,7 +1,10 @@
+import type { FundReportingMetrics } from "@/features/fund-management/lib/fund-reporting";
+import type { HouseholdFundStatus } from "@/features/fund-management/lib/household-reporting-types";
+
 export interface DashboardFund {
   id: string;
   name: string;
-  targetAmount: number;
+  villageTargetAmount: number;
   startDate: Date;
   endDate: Date;
 }
@@ -9,7 +12,7 @@ export interface DashboardFund {
 export interface ChiefDashboardData {
   totalHouses: number;
   totalMembers: number;
-  totalCollected: number;
+  fundMetrics: FundReportingMetrics | null;
   currentCollectorName: string | null;
 }
 
@@ -19,11 +22,11 @@ export interface ChiefDemographicsData {
 }
 
 export interface CollectorDashboardData {
-  acceptedCount: number;
+  lifetimeAcceptedCount: number;
 }
 
 export interface VillagerDashboardData {
-  paymentStatus: string | null;
+  household: HouseholdFundStatus | null;
   recentPayments: {
     id: string;
     amount: number;

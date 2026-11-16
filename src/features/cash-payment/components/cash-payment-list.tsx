@@ -19,7 +19,7 @@ export interface CashPaymentListItem {
   assessment: {
     houseNumberSnapshot: string;
   };
-  fund: { status: FundStatus };
+  fund: { status: FundStatus; name?: string };
   payer: {
     name: string;
   };
@@ -55,6 +55,7 @@ export function CashPaymentList({
                   <p className="font-semibold leading-snug">
                     {payment.payer.name}
                   </p>
+                  {payment.fund.name ? <p className="text-sm text-muted-foreground">{payment.fund.name}</p> : null}
                   <p className="text-sm text-muted-foreground">
                     {formatMessage(t("cashPay.list.house"), {
                       number: payment.assessment.houseNumberSnapshot,

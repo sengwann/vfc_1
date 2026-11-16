@@ -30,7 +30,8 @@ export default async function PlatformAuditPage({
 
   const params = await resolveSearchParams(searchParams);
   const filters = parseAuditFilters(params);
-  const { logs, total, totalPages } = await getPlatformAuditLogs({ filters });
+  const result = filters.dateRange.ok
+    ? await getPlatformAuditLogs({ filters }) : null;
 
   const rawActionType = getFirstString(params.actionType);
   const rawDateFrom = getFirstString(params.dateFrom);
@@ -40,11 +41,11 @@ export default async function PlatformAuditPage({
   if (filters.actionType) {
     filterParams.set("actionType", filters.actionType);
   }
-  if (rawDateFrom) {
-    filterParams.set("dateFrom", rawDateFrom);
+  if (filters.dateRange.ok && filters.dateRange.from) {
+    filterParams.set("dateFrom", filters.dateRange.from);
   }
-  if (rawDateTo) {
-    filterParams.set("dateTo", rawDateTo);
+  if (filters.dateRange.ok && filters.dateRange.to) {
+    filterParams.set("dateTo", filters.dateRange.to);
   }
   const baseQuery = filterParams.toString();
   const hasActiveFilters = baseQuery !== "";
@@ -57,6 +58,8 @@ export default async function PlatformAuditPage({
       />
 
       <AuditFiltersForm
+        key={JSON.stringify([params.actionType, params.entityType, params.dateFrom, params.dateTo])}
+        dateError={filters.dateRange.ok ? undefined : filters.dateRange.error}
         actionTypeOptions={ACTION_TYPE_OPTIONS}
         basePath="/admin/audit"
         entityTypeOptions={ENTITY_TYPE_OPTIONS}
@@ -68,25 +71,29 @@ export default async function PlatformAuditPage({
         showEntityTypeFilter={false}
       />
 
-      {total > 0 ? (
-        <p aria-live="polite" className="text-sm text-muted-foreground">
-          {fillTemplate(t("audit.summary"), { total })}
-        </p>
+      {result ? (
+        <>
+          {result.total > 0 ? (
+            <p aria-live="polite" className="text-sm text-muted-foreground">
+              {fillTemplate(t("audit.summary"), { total: result.total })}
+            </p>
+          ) : null}
+
+          <PlatformAuditList
+            hasActiveFilters={hasActiveFilters}
+            language={language}
+            logs={result.logs}
+          />
+
+          <AuditPagination
+            basePath="/admin/audit"
+            baseQuery={baseQuery}
+            currentPage={filters.page}
+            language={language}
+            totalPages={result.totalPages}
+          />
+        </>
       ) : null}
-
-      <PlatformAuditList
-        hasActiveFilters={hasActiveFilters}
-        language={language}
-        logs={logs}
-      />
-
-      <AuditPagination
-        basePath="/admin/audit"
-        baseQuery={baseQuery}
-        currentPage={filters.page}
-        language={language}
-        totalPages={totalPages}
-      />
     </div>
   );
 }

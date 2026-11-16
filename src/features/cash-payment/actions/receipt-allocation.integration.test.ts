@@ -11,6 +11,8 @@ import { getCurrentPeriod } from "@/lib/authz/collector-period";
 import { inspectDatabaseError } from "@/lib/db/database-errors";
 interface RequestContext {
   client: PrismaClient;
+  productionTimeout?: boolean;
+  attempts?: number;
   villageId: string;
   actorId: string;
   pid?: number;
@@ -31,6 +33,7 @@ vi.mock("@/lib/auth/session-identity", () => ({ getSessionIdentity: async () => 
 vi.mock("@/lib/prisma", () => ({ prisma: new Proxy({}, { get(_target, key) {
   const request = context(), client = request.client;
   if (key === "$transaction") return (body: (tx: Prisma.TransactionClient) => Promise<unknown>, options: object) => client.$transaction(async (real) => {
+    request.attempts = (request.attempts ?? 0) + 1;
     const [backend] = await real.$queryRaw<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
     request.pid = backend.pid;
     const tx = new Proxy(real, { get(target, method) {
@@ -43,7 +46,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: new Proxy({}, { get(_target, key) {
       const value = Reflect.get(target, method); return typeof value === "function" ? value.bind(target) : value;
     } });
     const result = await body(tx); await request.beforeCommit?.(); return result;
-  }, { ...options, timeout: 20000 });
+  }, request.productionTimeout ? options : { ...options, timeout: 20000 });
   const value = Reflect.get(client, key); return typeof value === "function" ? value.bind(client) : value;
 } }) }));
 import { recordCashPaymentAction } from "./record-cash-payment.action";
@@ -72,7 +75,7 @@ function form(id: string) {
   return data;
 }
 describe.skipIf(!enabled)("two-Village receipt allocator release gate", () => {
-  it("commits both real actions with distinct receipts and exactly two linked audits each", async () => {
+  it.each([false, true])("commits distinct receipts under actual contention; production timeout=%s", async (productionTimeout) => {
     await disposable(async (raw, url) => {
       await raw.query(await migration());
       for (const id of ["a", "b"]) {
@@ -87,8 +90,8 @@ describe.skipIf(!enabled)("two-Village receipt allocator release gate", () => {
       }
       const clients = [new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) }), new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) })];
       const written = gate(), release = gate(), allocating = gate();
-      const firstContext: RequestContext = { client: clients[0], villageId: "a", actorId: "collector-a", beforeCommit: async () => { written.open(); await release.reached; } };
-      const secondContext: RequestContext = { client: clients[1], villageId: "b", actorId: "collector-b", onAllocator: allocating.open };
+      const firstContext: RequestContext = { client: clients[0], productionTimeout, villageId: "a", actorId: "collector-a", beforeCommit: async () => { written.open(); await release.reached; } };
+      const secondContext: RequestContext = { client: clients[1], productionTimeout, villageId: "b", actorId: "collector-b", onAllocator: allocating.open };
       let first: ReturnType<typeof observe<Awaited<ReturnType<typeof recordCashPaymentAction>>>> | undefined;
       let second: typeof first;
       const observationAbort = new AbortController();
@@ -121,6 +124,11 @@ describe.skipIf(!enabled)("two-Village receipt allocator release gate", () => {
           ]));
         }
         expect(await clients[0].auditLog.count()).toBe(4);
+        for (const request of [firstContext, secondContext]) {
+          expect(request.attempts).toBeGreaterThanOrEqual(1);
+          expect(request.attempts).toBeLessThanOrEqual(4);
+        }
+        expect(await clients[1].$queryRaw`SELECT 1 AS recovered`).toEqual([{ recovered: 1 }]);
       } catch (error) { failed = true; throw error; }
       finally {
         release.open(); observationAbort.abort(); await observation; await first; await second;

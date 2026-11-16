@@ -6,7 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Section } from "@/components/ui/section";
 import { useTranslation } from "@/lib/i18n/provider";
-import { formatAmount, formatYangonDateTime } from "@/lib/utils";
+import { FundSummaryCard } from "@/features/fund-management/components/fund-summary-card";
+import { formatYangonDateTime } from "@/lib/utils";
 import { AgeGroupChart } from "./age-group-chart";
 import type {
   ChiefDashboardData,
@@ -61,24 +62,7 @@ export function ChiefOverview({
                 })}
               </p>
             </div>
-            <dl className="grid grid-cols-2 gap-3">
-              <div className="rounded-lg bg-muted/60 p-3">
-                <dt className="text-sm text-muted-foreground">
-                  {t("dashboard.fund.target")}
-                </dt>
-                <dd className="mt-1 text-lg font-semibold tabular-nums">
-                  {formatAmount(fund.targetAmount)}
-                </dd>
-              </div>
-              <div className="rounded-lg bg-success-soft p-3">
-                <dt className="text-sm text-success-strong">
-                  {t("dashboard.fund.collected")}
-                </dt>
-                <dd className="mt-1 text-lg font-semibold tabular-nums text-success-strong">
-                  {formatAmount(data.totalCollected)}
-                </dd>
-              </div>
-            </dl>
+            {data.fundMetrics ? <FundSummaryCard metrics={data.fundMetrics} /> : null}
           </CardContent>
         </Card>
       ) : (

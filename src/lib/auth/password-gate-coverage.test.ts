@@ -31,6 +31,14 @@ const ALLOWED = new Set([
   "src/app/(auth)/signup/register/page.tsx",
   // Mentions getCurrentUser in a comment only.
   "src/features/village-management/lib/village-lifecycle.ts",
+  // Reporting readers first require Chief/Villager access, then recheck the
+  // signed session version and password gate inside their read-only snapshot.
+  "src/features/fund-management/lib/fund-report-queries.ts",
+  "src/features/fund-management/lib/member-fund-query.ts",
+  // History readers enforce guards and recheck signed identity/password in READ ONLY snapshots.
+  "src/features/payment-history/lib/history-queries.ts",
+  // Lifecycle history rechecks Chief authority and the password gate in its snapshot.
+  "src/features/fund-management/lib/fund-lifecycle-history.ts",
   // Applies the gate explicitly (mustChangePassword check).
   "src/features/fund-management/actions/search-payment-status.action.ts",
 ]);

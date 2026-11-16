@@ -27,6 +27,7 @@ export function AuditDetailCard({
   entityInfo,
   metadata,
   language,
+  financial = false,
 }: {
   actionType: AuditActionType;
   entityType: string;
@@ -35,6 +36,7 @@ export function AuditDetailCard({
   entityInfo: EntityLinkInfo;
   metadata: unknown;
   language: LanguagePreference;
+  financial?: boolean;
 }) {
   const t = getT(language);
   const transition = getStatusTransition(metadata);
@@ -73,7 +75,7 @@ export function AuditDetailCard({
     },
     {
       label: t("audit.detail.actor"),
-      value: actorName ?? t("audit.system"),
+      value: actorName ?? t(financial ? "funds.history.actorUnavailable" : "audit.system"),
     },
     {
       label: t("audit.detail.timestamp"),

@@ -30,6 +30,11 @@ export async function resolveEntityInfo(
         : { label: entityId, href: null };
     }
 
+    case AuditEntityType.FUND_END_DATE_EXTENSION: {
+      const extension = await prisma.fundEndDateExtension.findFirst({ where: { id: entityId, villageId }, select: { fund: { select: { id: true, name: true } } } });
+      return extension ? { label: extension.fund.name, href: `/village/funds/${encodeURIComponent(extension.fund.id)}` } : { label: entityId, href: null };
+    }
+
     case AuditEntityType.FUND: {
       const fund = await prisma.fund.findFirst({
         where: { id: entityId, villageId },

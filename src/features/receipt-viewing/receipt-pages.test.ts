@@ -4,17 +4,18 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionUser } from "@/lib/auth/auth.types";
-const mocks = vi.hoisted(() => ({ user: vi.fn(), collector: vi.fn(), list: vi.fn(), detail: vi.fn() }));
+const mocks = vi.hoisted(() => ({ user: vi.fn(), collector: vi.fn(), list: vi.fn(), detail: vi.fn(), readOnly: vi.fn(), transaction: vi.fn() }));
 vi.mock("@/lib/auth/guards", () => ({ requireAuthenticatedUser: mocks.user }));
-vi.mock("@/lib/authz", () => ({ getActiveCollectorContext: mocks.collector }));
-vi.mock("@/lib/prisma", () => ({ prisma: { receipt: { findMany: mocks.list, findUnique: mocks.detail } } }));
+vi.mock("@/lib/authz", () => ({ getActiveCollectorContext: mocks.collector, getCurrentPeriod: () => ({ year: 2026, month: 11 }) }));
+vi.mock("@/lib/auth/session-identity", () => ({ getSessionIdentity: async () => ({ userId: "member", sessionVersion: 1 }) }));
+vi.mock("@/lib/prisma", () => ({ prisma: { receipt: { findMany: mocks.list, findUnique: mocks.detail }, $transaction: mocks.transaction } }));
 vi.mock("next/navigation", () => ({ notFound: () => { throw Object.assign(new Error("not found"), { digest: "TEST_NOT_FOUND" }); }, redirect: (path: string) => { throw Object.assign(new Error("navigation"), { path }); } }));
 import ReceiptsPage from "@/app/(village)/village/receipts/page";
 import ReceiptDetailPage from "@/app/(village)/village/receipts/[receiptId]/page";
 import { TranslationProvider } from "@/lib/i18n/provider";
 const actor: SessionUser = { id: "member", villageId: "v", houseId: "h", role: "VILLAGER", membershipStatus: "ACTIVE", name: "Member", email: null, phone: null, dateOfBirth: null, mustChangePassword: false };
 function receipt() { return { id: "receipt-old", receiptNumber: "VFC-ORIGINAL-0001", villageId: "v", status: "VOIDED", createdAt: new Date("2026-01-01"), payment: {
-  id: "payment-old", amount: 1001, voidReason: "Incorrect payer recorded", createdAt: new Date("2026-01-01"),
+  id: "payment-old", status: "VOIDED", amount: 1001, voidReason: "Incorrect payer recorded", createdAt: new Date("2026-01-01"),
   collectorUserId: "collector", payerUserId: "member", fund: { name: "Fund" },
   assessment: { houseNumberSnapshot: "FROZEN-H1" }, house: { houseNumber: "LIVE-H99" },
   payer: { name: "Member" }, collector: { name: "Collector" },
@@ -24,20 +25,26 @@ function render(element: Parameters<typeof renderToStaticMarkup>[0]) {
 }
 beforeEach(() => {
   vi.resetAllMocks(); mocks.user.mockResolvedValue(actor); mocks.collector.mockResolvedValue(null);
-  mocks.detail.mockResolvedValue(receipt()); mocks.list.mockResolvedValue([receipt(), { ...receipt(), id: "receipt-new", receiptNumber: "VFC-NEW-0002", status: "ACTIVE" }]);
+  mocks.transaction.mockImplementation(async (body) => body({
+    $executeRaw: mocks.readOnly, user: { findUnique: async () => ({ ...await mocks.user(), sessionVersion: 1, village: { status: "ACTIVE" } }) },
+    collectorAssignment: { findFirst: async () => await mocks.collector() ? { id: "assignment" } : null },
+    fund: { findMany: async () => [{ id: "f", name: "Fund" }] }, receipt: { findMany: mocks.list },
+  }));
+  mocks.detail.mockResolvedValue(receipt()); mocks.list.mockResolvedValue([receipt(), { ...receipt(), id: "receipt-new", receiptNumber: "VFC-NEW-0002", status: "ACTIVE", payment: { ...receipt().payment, status: "ACCEPTED" } }]);
 });
 describe("receipt readers and existing permissions", () => {
   it("retains ACTIVE/VOIDED history, identity and numbers without a status filter", async () => {
     const html = render(await ReceiptsPage());
     expect(html).toContain("VFC-ORIGINAL-0001"); expect(html).toContain("VFC-NEW-0002");
     expect(html).toContain("receipt-old"); expect(html).toContain("receipt-new");
-    expect(mocks.list).toHaveBeenCalledWith(expect.objectContaining({ where: { villageId: "v", payment: { payerUserId: "member" } } }));
+    expect(mocks.list).toHaveBeenCalledWith(expect.objectContaining({ where: { AND: [{ villageId: "v", payment: { is: { AND: [{ AND: [{ villageId: "v", payerUserId: "member" }, { receipt: { isNot: null } }] }] } } }] } }));
   });
   it.each(["chief", "collector", "own"] as const)("uses the existing %s list restrictions", async (kind) => {
     if (kind === "chief") mocks.user.mockResolvedValue({ ...actor, role: "CHIEF" });
     if (kind === "collector") mocks.collector.mockResolvedValue({ user: actor, villageId: "v" });
     await ReceiptsPage();
-    const where = kind === "chief" ? { villageId: "v" } : kind === "collector" ? { villageId: "v", OR: [{ payment: { collectorUserId: "member" } }, { payment: { payerUserId: "member" } }] } : { villageId: "v", payment: { payerUserId: "member" } };
+    const scope = kind === "chief" ? { villageId: "v" } : kind === "collector" ? { villageId: "v", OR: [{ collectorUserId: "member" }, { payerUserId: "member" }] } : { villageId: "v", payerUserId: "member" };
+    const where = { AND: [{ villageId: "v", payment: { is: { AND: [{ AND: [scope, { receipt: { isNot: null } }] }] } } }] };
     expect(mocks.list).toHaveBeenCalledWith(expect.objectContaining({ where }));
   });
   it("renders frozen detail identity, void reason and original receipt number", async () => {

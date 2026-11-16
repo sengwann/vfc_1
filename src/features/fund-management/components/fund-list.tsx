@@ -19,8 +19,8 @@ export interface FundListItem {
   id: string;
   name: string;
   status: FundStatus;
-  targetAmount: number;
-  collectedAmount: number;
+  villageTargetAmount: number;
+  acceptedCollectionAmount: number;
   /** ISO string */
   startDate: string;
   /** ISO string */
@@ -133,8 +133,8 @@ export function FundList({
           <ul className="grid gap-3 lg:grid-cols-2">
             {funds.map((fund) => {
               const percent = getProgressPercent(
-                fund.collectedAmount,
-                fund.targetAmount,
+                fund.acceptedCollectionAmount,
+                fund.villageTargetAmount,
               );
               const showProgress = fund.status !== "DRAFT";
 
@@ -166,7 +166,7 @@ export function FundList({
                             {t("funds.card.collected")}
                           </dt>
                           <dd className="text-xl font-semibold tabular-nums">
-                            {formatAmount(fund.collectedAmount)}
+                            {formatAmount(fund.acceptedCollectionAmount)}
                           </dd>
                         </div>
                         <div className="space-y-0.5">
@@ -174,7 +174,7 @@ export function FundList({
                             {t("funds.card.target")}
                           </dt>
                           <dd className="text-xl font-semibold tabular-nums text-muted-foreground">
-                            {formatAmount(fund.targetAmount)}
+                            {formatAmount(fund.villageTargetAmount)}
                           </dd>
                         </div>
                       </dl>

@@ -1,5 +1,6 @@
 "use client";
 
+import type { FundReportingMetrics } from "../lib/fund-reporting";
 import type { ReactNode } from "react";
 import type { FundStatus } from "@prisma/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,7 +16,6 @@ export interface FundDetailData {
   name: string;
   description: string | null;
   status: FundStatus;
-  targetAmount: number;
   /** ISO strings */
   startDate: string;
   endDate: string;
@@ -34,14 +34,14 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 
 export function FundDetailView({
   fund,
-  collectedAmount,
-  acceptedCount,
+  metrics,
   lifecycle,
   paymentSearch,
+  history,
 }: {
+  history?: ReactNode;
   fund: FundDetailData;
-  collectedAmount: number;
-  acceptedCount: number;
+  metrics: FundReportingMetrics;
   /** Server-rendered lifecycle actions. */
   lifecycle: ReactNode;
   /** Payment status search, or null for draft funds. */
@@ -64,12 +64,10 @@ export function FundDetailView({
 
       <div className="grid gap-4 lg:grid-cols-3 lg:items-start">
         <div className="space-y-4 lg:col-span-2">
-          <FundSummaryCard
-            acceptedCount={acceptedCount}
-            collectedAmount={collectedAmount}
-            targetAmount={fund.targetAmount}
-          />
+          <FundSummaryCard metrics={metrics} />
           {paymentSearch}
+          {history}
+          <a className="inline-block underline" href={`/village/funds/${encodeURIComponent(fund.id)}/reconciliation`}>{t("reconciliation.title")}</a>
         </div>
 
         <div className="space-y-4">

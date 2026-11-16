@@ -171,6 +171,10 @@ beforeEach(() => {
             primary: parentPrimary,
           },
         });
+      if (method === "POST" && route === `${base}/branches/${child}/databases`) {
+        const requested = body?.database as { name: string; owner_name: string };
+        return result({database:{...requested,branch_id:child}});
+      }
       if (route.endsWith("/databases"))
         return result({
           databases: [
@@ -519,4 +523,33 @@ describe("Neon lifecycle safety (mocked services only)", () => {
     expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(0);
     expect(m.open).not.toHaveBeenCalled();
   });
+});
+
+it("release handoff requires opt-in and rechecks ownership before revealing connection",async()=>{
+  const sandbox=await startReportPostgresSandbox();
+  try{
+    await expect(sandbox.withConnection(async()=>true)).rejects.toThrow("Release opt-in");
+    vi.stubEnv("VFC_RUN_PHASE7_RELEASE","1");
+    expect(await sandbox.withConnection(async url=>new URL(url).hostname)).toBe(host);
+    mismatchOwner=true;const run=vi.fn();await expect(sandbox.withConnection(run)).rejects.toThrow();expect(run).not.toHaveBeenCalled();
+  }finally{mismatchOwner=false;await sandbox.dispose();}
+});
+it("creates a unique empty database only on the owned child, never deletes it with SQL",async()=>{
+  vi.stubEnv("VFC_RUN_PHASE7_RELEASE","1");const sandbox=await startReportPostgresSandbox();
+  try{
+    const url=new URL(await sandbox.createEmptyDatabase());expect(url.hostname).toBe(host);expect(url.pathname).toMatch(/^\/vfc_test_[a-f0-9]{32}$/);
+    const request=calls.find(call=>call.method==="POST"&&call.route.endsWith("/databases"));
+    expect(request?.route).toBe(`/projects/${project}/branches/${child}/databases`);
+    expect(request?.body).toEqual({database:{name:url.pathname.slice(1),owner_name:"report_role"}});
+  }finally{await sandbox.dispose();}
+});
+
+it("release cleanup awaits a late Prisma close before pool close and deletion",async()=>{
+  vi.stubEnv("VFC_RUN_PHASE7_RELEASE","1");const sandbox=await startReportPostgresSandbox();
+  vi.useFakeTimers();let finish!:()=>void;const waiting=new Promise<void>(resolve=>{finish=resolve;});
+  m.close.mockImplementation(()=>waiting);let settled=false;
+  const disposal=sandbox.dispose().catch(error=>error).then(error=>{settled=true;return error;});
+  await vi.advanceTimersByTimeAsync(10001);expect(settled).toBe(false);expect(m.end).not.toHaveBeenCalled();
+  finish();const error=await disposal;expect(error).toBeInstanceOf(AggregateError);expect(m.end).toHaveBeenCalled();
+  expect(order.some(item=>item.startsWith("DELETE "))).toBe(true);
 });

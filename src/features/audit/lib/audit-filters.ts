@@ -1,4 +1,5 @@
 import "server-only";
+import { parseFinancialDateRange, type FinancialDateRange } from "@/lib/financial-date-range";
 import { AuditActionType } from "@prisma/client";
 import { AuditEntityType } from "@/lib/audit";
 
@@ -20,8 +21,7 @@ export const ENTITY_TYPE_OPTIONS = Object.values(AuditEntityType) as string[];
 export interface AuditFilters {
   actionType: AuditActionType | null;
   entityType: AuditEntityType | null;
-  dateFrom: Date | null;
-  dateTo: Date | null;
+  dateRange: FinancialDateRange;
   page: number;
 }
 
@@ -65,17 +65,6 @@ export async function extractRouteParam(
   return getFirstString(params[key]);
 }
 
-function parseDate(raw: string): Date | null {
-  if (!raw) {
-    return null;
-  }
-  const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-  return date;
-}
-
 function parsePage(raw: string): number {
   const page = parseInt(raw, 10);
   if (Number.isNaN(page) || page < 1) {
@@ -87,8 +76,6 @@ function parsePage(raw: string): number {
 export function parseAuditFilters(params: SearchParams): AuditFilters {
   const rawActionType = getFirstString(params.actionType);
   const rawEntityType = getFirstString(params.entityType);
-  const rawDateFrom = getFirstString(params.dateFrom);
-  const rawDateTo = getFirstString(params.dateTo);
   const rawPage = getFirstString(params.page);
 
   const actionType =
@@ -104,8 +91,7 @@ export function parseAuditFilters(params: SearchParams): AuditFilters {
   return {
     actionType,
     entityType,
-    dateFrom: parseDate(rawDateFrom),
-    dateTo: parseDate(rawDateTo),
+    dateRange: parseFinancialDateRange(params.dateFrom, params.dateTo),
     page: parsePage(rawPage || "1"),
   };
 }

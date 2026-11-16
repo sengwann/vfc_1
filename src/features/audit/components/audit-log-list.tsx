@@ -21,11 +21,13 @@ export function AuditLogList({
   basePath,
   language,
   hasActiveFilters = false,
+  detailBasePath = basePath,
 }: {
   logs: AuditLogListItem[];
   basePath: string;
   language: LanguagePreference;
   hasActiveFilters?: boolean;
+  detailBasePath?: string;
 }) {
   const t = getT(language);
 
@@ -72,7 +74,7 @@ export function AuditLogList({
                 <li key={log.id}>
                   <Link
                     className="flex min-h-16 items-center gap-3 px-4 py-3 transition-colors hover:bg-muted sm:px-5"
-                    href={`${basePath}/${log.id}`}
+                    href={`${detailBasePath}/${encodeURIComponent(log.id)}`}
                   >
                     <div className="min-w-0 flex-1 space-y-1.5">
                       <div className="flex flex-wrap items-center gap-1.5">
@@ -87,7 +89,7 @@ export function AuditLogList({
                       </div>
                       <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">
                         {fillTemplate(t("audit.by"), {
-                          name: log.actorName ?? t("audit.system"),
+                          name: log.actorName ?? t(log.fundId ? "funds.history.actorUnavailable" : "audit.system"),
                         })}
                       </p>
                     </div>

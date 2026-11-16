@@ -49,6 +49,8 @@ const ENTITY_KEYS: Record<string, TranslationKey> = {
   HOUSE: "audit.entity.house",
   USER: "audit.entity.user",
   FUND: "audit.entity.fund",
+  FUND_END_DATE_EXTENSION: "audit.entity.fundExtension",
+  FUND_HOUSE_ASSESSMENT: "audit.entity.fundAssessment",
   COLLECTOR_ASSIGNMENT: "audit.entity.collectorAssignment",
   PAYMENT: "audit.entity.payment",
   RECEIPT: "audit.entity.receipt",
@@ -58,6 +60,19 @@ const ENTITY_KEYS: Record<string, TranslationKey> = {
 };
 
 const METADATA_KEYS: Record<string, TranslationKey> = {
+  extensionId: "audit.meta.extensionId",
+  previousEndDate: "audit.meta.previousEndDate",
+  newEndDate: "audit.meta.newEndDate",
+  termsVersion: "audit.meta.termsVersion",
+  closedAt: "audit.meta.closedAt",
+  acceptedPaymentCount: "audit.meta.acceptedPaymentCount",
+  villageTargetAmount: "audit.meta.villageTargetAmount",
+  eligibleHouseCount: "audit.meta.eligibleHouseCount",
+  assessmentPerHouse: "audit.meta.assessmentPerHouse",
+  totalAssessment: "audit.meta.totalAssessment",
+  roundingSurplus: "audit.meta.roundingSurplus",
+  snapshotAt: "audit.meta.snapshotAt",
+
   villageCode: "audit.meta.villageCode",
   name: "audit.meta.name",
   previousStatus: "audit.meta.previousStatus",
@@ -96,6 +111,7 @@ const METADATA_KEYS: Record<string, TranslationKey> = {
 
 /** Metadata values that are ISO timestamps, shown in Yangon time. */
 const DATE_METADATA_KEYS = new Set([
+  "closedAt", "snapshotAt",
   "approvedAt",
   "scheduledDeactivationAt",
   "rejectedAt",
@@ -192,7 +208,14 @@ export function formatMetadataValue(
     // Recovery events and revocation reasons are stored as CODE_ISSUED,
     // TOO_MANY_ATTEMPTS and so on: show them as readable words.
     if (key === "event" || key === "revocationReason") {
-      return humanize(value);
+      const financialEvents: Record<string, TranslationKey> = {
+        DRAFT_CREATED: "audit.event.DRAFT_CREATED",
+        DRAFT_UPDATED: "audit.event.DRAFT_UPDATED",
+        FUND_ACTIVATED: "audit.event.FUND_ACTIVATED",
+        FUND_EXTENDED: "audit.event.FUND_EXTENDED",
+        FUND_CLOSED: "audit.event.FUND_CLOSED",
+      };
+      return key === "event" && financialEvents[value] ? t(financialEvents[value]) : humanize(value);
     }
     return STATUS_METADATA_KEYS.has(key) ? getStatusLabel(t, value) : value;
   }

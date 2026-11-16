@@ -4,6 +4,9 @@ import {
   PaymentStatus,
   UserRole,
 } from "@prisma/client";
+import { FundChangedRecovery } from "@/features/fund-management/components/fund-changed-recovery";
+import { getChiefFundReport } from "@/features/fund-management/lib/fund-report-queries";
+import { getMemberCurrentFund } from "@/features/fund-management/lib/member-fund-query";
 import { ChiefContactCard } from "../../../../features/shell/components/chief-contact-card";
 import { PaymentStatusSearchSection } from "../../../../features/fund-management/components/payment-status-search";
 import { getVillageShellContext } from "../../../../features/shell/lib/shell-context";
@@ -16,7 +19,7 @@ import {
 import { NeedsAttentionCard } from "../../../../features/shell/components/needs-attention-card";
 import { prisma } from "../../../../lib/prisma";
 import { getChiefDemographicData } from "@/features/analytics/lib/chief-analytics";
-import { getCollectorChartData } from "@/features/analytics/lib/collector-analytics";
+import { getCollectorCollectionSummary } from "@/features/analytics/lib/collector-analytics";
 import {
   ChiefDemographics,
   ChiefOverview,
@@ -74,15 +77,16 @@ export default async function VillageDashboardPage() {
       villageTargetAmount: true,
       startDate: true,
       endDate: true,
+      termsVersion: true,
     },
   });
 
-  // Preserve the dashboard's presentation contract with the village-wide target.
-  const currentFund = currentFundRecord
+  // Name the village target explicitly; household assessments are read separately.
+  let currentFund = currentFundRecord
     ? {
         id: currentFundRecord.id,
         name: currentFundRecord.name,
-        targetAmount: currentFundRecord.villageTargetAmount,
+        villageTargetAmount: currentFundRecord.villageTargetAmount,
         startDate: currentFundRecord.startDate,
         endDate: currentFundRecord.endDate,
       }
@@ -122,23 +126,20 @@ export default async function VillageDashboardPage() {
       }),
     ]);
 
-    let totalCollected = 0;
-    if (currentFund) {
-      const result = await prisma.payment.aggregate({
-        where: {
-          villageId,
-          fundId: currentFund.id,
-          status: PaymentStatus.ACCEPTED,
-        },
-        _sum: { amount: true },
-      });
-      totalCollected = result._sum.amount ?? 0;
+    const report = currentFund ? await getChiefFundReport(currentFund.id) : null;
+    // Offer a fresh request if activation/extension/closure raced fund discovery.
+    const fundMetrics = report?.fund.status === "ACTIVE" ? report.metrics : null;
+    if (report && (report.fund.status !== "ACTIVE" || report.fund.termsVersion !== currentFundRecord?.termsVersion)) {
+      return <FundChangedRecovery retryHref="/village/dashboard" />;
+    }
+    if (currentFund && report) {
+      currentFund = { ...currentFund, name: report.fund.name, villageTargetAmount: report.metrics.villageTargetAmount };
     }
 
     chiefData = {
       totalHouses,
       totalMembers,
-      totalCollected,
+      fundMetrics,
       currentCollectorName: currentCollector?.user.name ?? null,
     };
   }
@@ -151,44 +152,18 @@ export default async function VillageDashboardPage() {
   // ── Collector data ────────────────────────────────────────────
   let collectorData: CollectorDashboardData | null = null;
 
+  let collectorSummary: Awaited<ReturnType<typeof getCollectorCollectionSummary>> | null = null;
   if (collector && collectorContext) {
-    const [acceptedCount] = await Promise.all([
-      prisma.payment.count({
-        where: {
-          villageId,
-          status: PaymentStatus.ACCEPTED,
-          collectorUserId: user.id,
-        },
-      }),
-    ]);
-
-    collectorData = { acceptedCount };
-  }
-
-  let collectorChartData: Awaited<
-    ReturnType<typeof getCollectorChartData>
-  > | null = null;
-  if (collector && collectorContext) {
-    collectorChartData = await getCollectorChartData(villageId, user.id);
+    collectorSummary = await getCollectorCollectionSummary(villageId, user.id);
+    collectorData = { lifetimeAcceptedCount: collectorSummary.acceptedCount };
   }
 
   // ── Villager data ─────────────────────────────────────────────
   let villagerData: VillagerDashboardData | null = null;
 
   if (villager && activeMembership) {
-    let paymentStatus: PaymentStatus | null = null;
-    if (currentFund && user.houseId) {
-      const myPayment = await prisma.payment.findFirst({
-        where: {
-          villageId,
-          fundId: currentFund.id,
-          houseId: user.houseId,
-          status: PaymentStatus.ACCEPTED,
-        },
-        select: { status: true },
-      });
-      paymentStatus = myPayment?.status ?? null;
-    }
+    const memberFund = await getMemberCurrentFund();
+    currentFund = memberFund?.fund ?? null;
 
     const [recentPayments, receiptsCount] = await Promise.all([
       prisma.payment.findMany({
@@ -208,7 +183,7 @@ export default async function VillageDashboardPage() {
     ]);
 
     villagerData = {
-      paymentStatus,
+      household: memberFund?.household ?? null,
       recentPayments,
       receiptsCount,
     };
@@ -246,8 +221,8 @@ export default async function VillageDashboardPage() {
         <VillagerOverview data={villagerData} fund={currentFund} />
       ) : null}
 
-      {collector && collectorChartData ? (
-        <CollectorInsights data={collectorChartData} />
+      {collector && collectorSummary ? (
+        <CollectorInsights data={collectorSummary} />
       ) : null}
 
       {chief && chiefDemographics ? (

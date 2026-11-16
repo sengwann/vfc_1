@@ -1,31 +1,28 @@
 /** Test-only raw SQL fixtures. Every case rolls back, including CLOSED records. */
 import { randomUUID } from "node:crypto";
-import { Pool, type PoolClient, type Client } from "pg";
-import { requireTestDatabaseTarget } from "@/test-support/test-database";
+import type { PoolClient, Client } from "pg";
+import { withReleaseDatabase } from "@/test-support/phase7-release-sandbox";
 
 export async function fixture(run: (db: PoolClient | Client, id: string) => Promise<void>) {
-  const target = requireTestDatabaseTarget();
-  const pool = new Pool({ connectionString: target.url });
-  const db = await pool.connect();
-  const id = randomUUID();
-  try {
-    const identity = await db.query<{ name: string }>("SELECT current_database() AS name");
-    if (identity.rows[0]?.name !== target.database) throw new Error("Wrong test database");
-    await db.query("BEGIN");
-    await db.query('INSERT INTO "Village"(id,"villageCode",name,"updatedAt") VALUES ($1,$1,\'Test\',now())', [id]);
-    await db.query('INSERT INTO "House"(id,"villageId","houseNumber","updatedAt") VALUES ($1,$1,\'H1\',now())', [id]);
-    await db.query(`INSERT INTO "User"(id,"villageId","houseId",role,"membershipStatus",name,"passwordHash","updatedAt")
-      VALUES ($1,$1,$1,'CHIEF','ACTIVE','Test','unused',now())`, [id]);
-    await db.query('UPDATE "House" SET "headOfHouseId"=$1 WHERE id=$1', [id]);
-    await db.query(`INSERT INTO "Fund"(id,"villageId",name,"villageTargetAmount","startDate","endDate","updatedAt")
-      VALUES ($1,$1,'Test',1001,(clock_timestamp() AT TIME ZONE 'Asia/Yangon')::date-1,
-      (clock_timestamp() AT TIME ZONE 'Asia/Yangon')::date+1,now())`, [id]);
-    await run(db, id);
-  } finally {
-    await db.query("ROLLBACK").catch(() => undefined);
-    db.release();
-    await pool.end();
-  }
+  return withReleaseDatabase("migrated", async (db) => {
+    const id = randomUUID();
+    const failures:unknown[]=[];
+    try {
+      await db.query("BEGIN");
+      await db.query('INSERT INTO "Village"(id,"villageCode",name,"updatedAt") VALUES ($1,$1,\'Test\',now())', [id]);
+      await db.query('INSERT INTO "House"(id,"villageId","houseNumber","updatedAt") VALUES ($1,$1,\'H1\',now())', [id]);
+      await db.query(`INSERT INTO "User"(id,"villageId","houseId",role,"membershipStatus",name,"passwordHash","updatedAt")
+        VALUES ($1,$1,$1,'CHIEF','ACTIVE','Test','unused',now())`, [id]);
+      await db.query('UPDATE "House" SET "headOfHouseId"=$1 WHERE id=$1', [id]);
+      await db.query(`INSERT INTO "Fund"(id,"villageId",name,"villageTargetAmount","startDate","endDate","updatedAt")
+        VALUES ($1,$1,'Test',1001,(clock_timestamp() AT TIME ZONE 'Asia/Yangon')::date-1,
+        (clock_timestamp() AT TIME ZONE 'Asia/Yangon')::date+1,now())`, [id]);
+      await run(db, id);
+    } catch(error) { failures.push(error); } finally {
+      try{await db.query("ROLLBACK");}catch(error){failures.push(error);}
+    }
+    if(failures.length)throw new AggregateError(failures,"Schema fixture or rollback failed");
+  });
 }
 export async function activate(db: PoolClient | Client, id: string, assessment = 1001) {
   await db.query(`INSERT INTO "FundHouseAssessment"(id,"fundId","houseId","villageId","assessmentAmount","houseNumberSnapshot")

@@ -145,3 +145,28 @@ actually deleted. Fund/assessment/payment/receipt/extension references remain
 restrictive. Runtime roles have no direct lock-record deletion privilege. Verify
 empty-village cleanup, financial-reference refusal and missing-scope errors before
 release; this does not authorize financial-history deletion.
+
+
+## Phase 7.9 release rehearsal
+
+Use [the release runbook](phase7-release-verification.md) and evidence ledger.
+Legacy financial test helpers now provision empty databases only inside verified
+owned Neon children; cleanup disposes the branch, never SQL database/history
+removal. Separate release/migration/role opt-ins are mandatory.
+
+Fresh baseline: execute exact committed migration chain, test empty-history
+preflight, refusal/rollback cases and unrelated data preservation. Already-migrated
+database: inspect migration names/checksums/completion and catalogs; do not rerun
+old-baseline emptiness assertions as if valid financial history were an error.
+Existing unexpected history requires separately approved policy, never deletion,
+inferred targets or automatic backfill. Pending destructive legacy migrations stop
+release for review. Runtime credentials must differ from migration credentials;
+run the privilege assertions for each actual app/worker role before opening writes.
+
+Backup/restore is a mandatory controlled rehearsal into a uniquely named empty
+database on an owned child, with all protections preserved. No --clean or trigger
+bypass. Compare unrelated data, financial identities, allocator state and grants.
+Stop old writers/workers before migration and start only compatible new writers.
+Failure before writes requires reviewed schema/application recovery; after new
+writes an old-writer rollback is unsafe. Retain the existing forward-fix and
+explicit restore approval requirements. No rehearsal or deployment was executed.

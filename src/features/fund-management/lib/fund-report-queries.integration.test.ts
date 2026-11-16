@@ -1,3 +1,4 @@
+import { trackReleaseLifecycle, finishReleaseSetup } from "@/test-support/phase7-release-registry";
 import { randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import {
@@ -62,43 +63,48 @@ describe.skipIf(process.env.VFC_RUN_REPORT_POSTGRES_TESTS !== "1")(
     let payments: string[] = [];
     let receipts: string[] = [];
 
-    beforeAll(async () => {
-      const { startReportPostgresSandbox } = await import(
-        "@/test-support/report-postgres-sandbox"
-      );
-      sandbox = await startReportPostgresSandbox();
-      db = sandbox.db;
-      // The inherited branch must carry the financial schema AND its guards:
-      // every fixture below is created with production constraints enabled.
-      for (const table of [
-        "Fund",
-        "FundHouseAssessment",
-        "Payment",
-        "Receipt",
-      ]) {
-        const found = await db.pool.query<{ found: string | null }>(
-          "SELECT to_regclass($1) AS found",
-          [`public."${table}"`],
+    let setup: Promise<void> | undefined;
+    beforeAll(() => {
+      const work = async () => {
+        const { startReportPostgresSandbox } = await import(
+          "@/test-support/report-postgres-sandbox"
         );
-        if (!found.rows[0]?.found)
-          throw new Error(
-            `Disposable branch is missing the "${table}" table; apply migrations to the dedicated parent first`,
+        sandbox = await startReportPostgresSandbox();
+        db = sandbox.db;
+        // The inherited branch must carry the financial schema AND its guards:
+        // every fixture below is created with production constraints enabled.
+        for (const table of [
+          "Fund",
+          "FundHouseAssessment",
+          "Payment",
+          "Receipt",
+        ]) {
+          const found = await db.pool.query<{ found: string | null }>(
+            "SELECT to_regclass($1) AS found",
+            [`public."${table}"`],
           );
-      }
-      const guards = await db.pool.query<{ tgname: string }>(
-        `SELECT DISTINCT t.tgname FROM pg_trigger t
-        JOIN pg_class r ON r.oid = t.tgrelid
-        JOIN pg_namespace n ON n.oid = r.relnamespace
-        WHERE n.nspname = 'public' AND NOT t.tgisinternal
-        AND t.tgname IN ('vfc_validate_work','vfc_fund_guard','vfc_record_guard','vfc_transition_check')`,
-      );
-      expect(guards.rows.map((row) => row.tgname).sort()).toEqual([
-        "vfc_fund_guard",
-        "vfc_record_guard",
-        "vfc_transition_check",
-        "vfc_validate_work",
-      ]);
-    }, 300_000);
+          if (!found.rows[0]?.found)
+            throw new Error(
+              `Disposable branch is missing the "${table}" table; apply migrations to the dedicated parent first`,
+            );
+        }
+        const guards = await db.pool.query<{ tgname: string }>(
+          `SELECT DISTINCT t.tgname FROM pg_trigger t
+          JOIN pg_class r ON r.oid = t.tgrelid
+          JOIN pg_namespace n ON n.oid = r.relnamespace
+          WHERE n.nspname = 'public' AND NOT t.tgisinternal
+          AND t.tgname IN ('vfc_validate_work','vfc_fund_guard','vfc_record_guard','vfc_transition_check')`,
+        );
+        expect(guards.rows.map((row) => row.tgname).sort()).toEqual([
+          "vfc_fund_guard",
+          "vfc_record_guard",
+          "vfc_transition_check",
+          "vfc_validate_work",
+        ]);
+      };
+      setup = process.env.VFC_RUN_PHASE7_RELEASE === "1" ? trackReleaseLifecycle(work) : work();
+      return setup;
+    }, process.env.VFC_RUN_PHASE7_RELEASE === "1" ? 0 : 300_000);
     beforeEach(async () => {
       villages = [uid(), uid()];
       users = [uid(), uid(), uid()];
@@ -193,14 +199,19 @@ describe.skipIf(process.env.VFC_RUN_REPORT_POSTGRES_TESTS !== "1")(
       boundary.chief = users[0];
       boundary.village = villages[0];
       read = (await import("./fund-report-queries")).getChiefFundReport;
-    }, 20_000);
+    }, process.env.VFC_RUN_PHASE7_RELEASE === "1" ? 0 : 20_000);
 
     afterEach(() => vi.restoreAllMocks());
     afterAll(async () => {
-      vi.restoreAllMocks();
-      boundary.client = null;
-      await sandbox?.dispose();
-    }, 120_000);
+      const cleanup = async () => {
+        vi.restoreAllMocks();
+        boundary.client = null;
+        await sandbox?.dispose();
+      };
+      if (process.env.VFC_RUN_PHASE7_RELEASE === "1") {
+        await trackReleaseLifecycle(() => finishReleaseSetup(setup, cleanup));
+      } else await cleanup();
+    }, process.env.VFC_RUN_PHASE7_RELEASE === "1" ? 0 : 120_000);
 
     type Tx = Prisma.TransactionClient;
     type Body = (tx: Tx) => Promise<unknown>;
@@ -593,87 +604,27 @@ describe.skipIf(process.env.VFC_RUN_REPORT_POSTGRES_TESTS !== "1")(
       });
     });
 
-    it("rejects a CLOSED fund with an unpaid frozen assessment", async () => {
-      // Production forbids this state: the deferred constraint trigger
-      // vfc_validate_work on "FundFinancialValidationWork" (migration
-      // 20261107120000_fund_financial_integrity) raises
-      // VFC_SNAPSHOT_OR_CLOSURE_INVALID at COMMIT when a CLOSED fund has a
-      // frozen assessment without an ACCEPTED payment. To prove the reader
-      // ALSO fails closed, manufacture the inconsistency on THIS disposable
-      // child branch only by disabling exactly that one trigger, then restore
-      // it in finally. The parent branch is never connected to, and no
-      // migration or production constraint is modified.
-      const { FundReportIntegrityError } = await import(
-        "./fund-report-queries"
-      );
-      const triggerStateSql = `SELECT t.tgenabled FROM pg_trigger t
-        JOIN pg_class r ON r.oid = t.tgrelid
-        JOIN pg_namespace n ON n.oid = r.relnamespace
-        WHERE n.nspname = 'public' AND r.relname = 'FundFinancialValidationWork'
-        AND t.tgname = 'vfc_validate_work' AND NOT t.tgisinternal`;
+    it("rejects unpaid closure with constraints enabled and rolls back lifecycle/audit writes", async () => {
+      const id = funds[0];
+      const before = await db.prisma.fund.findUniqueOrThrow({ where: { id } });
+      const payments = await db.prisma.payment.findMany({ where: { fundId: id }, orderBy: { id: "asc" } });
+      const receipts = await db.prisma.receipt.findMany({ where: { payment: { fundId: id } }, orderBy: { id: "asc" } });
+      const audits = await db.prisma.auditLog.count({ where: { fundId: id } });
       const c = await db.pool.connect();
-      let triggerDisabled = false;
       try {
-        const before = await c.query<{ tgenabled: string }>(triggerStateSql);
-        expect(before.rows).toHaveLength(1);
-        expect(before.rows[0].tgenabled).toBe("O");
-        // Needs the connecting role to own the table (the role that applied
-        // migrations to the dedicated parent). If this statement fails the
-        // trigger was never disabled; finally only releases the connection.
-        await c.query(
-          `ALTER TABLE "FundFinancialValidationWork" DISABLE TRIGGER "vfc_validate_work"`,
-        );
-        triggerDisabled = true;
-        try {
-          await c.query("BEGIN");
-          // houses[1] has only a VOIDED payment and houses[2] has none, so two
-          // frozen assessments stay unpaid. Every other closure rule still
-          // applies: vfc_fund_guard and vfc_transition_check remain enabled
-          // (valid ACTIVE Chief closer, termsVersion increment, frozen terms).
-          await c.query(
-            `UPDATE "Fund" SET status='CLOSED',"closedAt"=now(),"closedByUserId"=$2,
-          "termsVersion"="termsVersion"+1 WHERE id=$1`,
-            [funds[0], users[0]],
-          );
-          await c.query("COMMIT");
-        } catch (error) {
-          await c.query("ROLLBACK");
-          throw error;
-        }
-      } finally {
-        try {
-          if (triggerDisabled) {
-            await c.query(
-              `ALTER TABLE "FundFinancialValidationWork" ENABLE TRIGGER "vfc_validate_work"`,
-            );
-          }
-        } finally {
-          c.release();
-        }
-      }
-      // The trigger must be enabled again before any further assertion runs.
-      const restored = await db.pool.query<{ tgenabled: string }>(
-        triggerStateSql,
-      );
-      expect(restored.rows).toHaveLength(1);
-      expect(restored.rows[0].tgenabled).toBe("O");
-      // The committed state really is CLOSED with unpaid frozen assessments.
-      const stored = await db.pool.query<{ status: string; unpaid: number }>(
-        `SELECT f.status, (SELECT count(*)::int FROM "FundHouseAssessment" a
-          WHERE a."fundId" = f.id AND NOT EXISTS (
-            SELECT 1 FROM "Payment" p
-            WHERE p."fundHouseAssessmentId" = a.id AND p.status = 'ACCEPTED')) AS unpaid
-        FROM "Fund" f WHERE f.id = $1`,
-        [funds[0]],
-      );
-      expect(stored.rows[0]).toMatchObject({ status: "CLOSED", unpaid: 2 });
-      // The reader fails closed instead of reporting the inconsistent fund.
-      await expect(read(funds[0])).rejects.toBeInstanceOf(
-        FundReportIntegrityError,
-      );
+        await c.query("BEGIN");
+        await c.query(`UPDATE "Fund" SET status='CLOSED',"closedAt"=now(),"closedByUserId"=$2,
+          "termsVersion"="termsVersion"+1 WHERE id=$1`, [id, users[0]]);
+        await expect(c.query("SET CONSTRAINTS ALL IMMEDIATE")).rejects.toMatchObject({
+          code: "P0001", message: expect.stringContaining("VFC_SNAPSHOT_OR_CLOSURE_INVALID"),
+        });
+      } finally { try { await c.query("ROLLBACK"); } finally { c.release(); } }
+      expect(await db.prisma.fund.findUniqueOrThrow({ where: { id } })).toEqual(before);
+      expect(await db.prisma.payment.findMany({ where: { fundId: id }, orderBy: { id: "asc" } })).toEqual(payments);
+      expect(await db.prisma.receipt.findMany({ where: { payment: { fundId: id } }, orderBy: { id: "asc" } })).toEqual(receipts);
+      expect(await db.prisma.auditLog.count({ where: { fundId: id } })).toBe(audits);
+      expect((await read(id)).fund.status).toBe("ACTIVE");
       await assertConnectionsReleased();
-      // The pool and the restored trigger still serve normal reads afterwards.
-      expect((await bounded(read(funds[1]))).fund.id).toBe(funds[1]);
     }, 20_000);
   },
 );

@@ -25,9 +25,7 @@ export function VillagerOverview({
   data: VillagerDashboardData;
 }) {
   const { t } = useTranslation();
-  const paymentStatusConfig = data.paymentStatus
-    ? STATUS[data.paymentStatus]
-    : null;
+  const household = data.household;
 
   return (
     <div className="space-y-6 sm:space-y-8">
@@ -46,7 +44,7 @@ export function VillagerOverview({
                     {t("dashboard.fund.targetAmount")}
                   </dt>
                   <dd className="text-right font-semibold tabular-nums">
-                    {formatAmount(fund.targetAmount)}
+                    {formatAmount(fund.villageTargetAmount)}
                   </dd>
                 </div>
                 <div className="flex items-start justify-between gap-3 py-2.5">
@@ -65,28 +63,23 @@ export function VillagerOverview({
                     {t("dashboard.fund.paymentStatus")}
                   </dt>
                   <dd>
-                    {data.paymentStatus ? (
-                      <Badge
-                        dot
-                        variant={paymentStatusConfig?.variant ?? "neutral"}
-                      >
-                        {paymentStatusConfig
-                          ? t(paymentStatusConfig.key)
-                          : data.paymentStatus}
-                      </Badge>
-                    ) : (
-                      <Badge dot variant="neutral">
-                        {t("dashboard.pay.notPaid")}
-                      </Badge>
-                    )}
+                    {household ? <Badge dot variant={household.state === "PAID" ? "success" : "neutral"}>
+                      {t(household.state === "PAID" ? "funds.household.paid" :
+                        household.state === "UNPAID" ? "funds.household.unpaid" :
+                        household.state === "NO_HOUSEHOLD" ? "funds.household.noHousehold" : "funds.household.notAssessed")}
+                    </Badge> : null}
                   </dd>
                 </div>
               </dl>
-              {!data.paymentStatus ? (
-                <p className="text-sm text-muted-foreground">
-                  {t("dashboard.pay.cashInfo")}
-                </p>
+              {household && (household.state === "PAID" || household.state === "UNPAID") ? (
+                <dl className="space-y-2 text-sm">
+                  <div><dt>{t("funds.household.assessment")}</dt><dd>{formatAmount(household.assessmentAmount)}</dd></div>
+                  <div><dt>{t("funds.household.outstanding")}</dt><dd>{formatAmount(household.outstandingAmount)}</dd></div>
+                </dl>
               ) : null}
+              {household?.state === "UNPAID" ? <p className="text-sm text-muted-foreground">{t("dashboard.pay.cashInfo")}</p> : null}
+              {household?.state === "NOT_ASSESSED" ? <p className="text-sm text-muted-foreground">{t("funds.household.notAssessedNote")}</p> : null}
+              {household?.state === "NO_HOUSEHOLD" ? <p className="text-sm text-muted-foreground">{t("funds.household.noHouseholdNote")}</p> : null}
             </CardContent>
           </Card>
         ) : (
@@ -126,7 +119,7 @@ export function VillagerOverview({
                         {formatAmount(payment.amount)}
                       </p>
                       <p className="text-sm text-muted-foreground">
-                        Cash · {formatYangonDateTime(payment.createdAt)}
+                        {t("dashboard.method.cash")} · {formatYangonDateTime(payment.createdAt)}
                       </p>
                     </div>
                     <Badge dot variant={statusConfig?.variant ?? "neutral"}>

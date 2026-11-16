@@ -1,4 +1,4 @@
-import { FundStatus, PaymentStatus } from "@prisma/client";
+import { FundStatus, PaymentStatus, type Prisma } from "@prisma/client";
 import { FundList } from "@/features/fund-management/components/fund-list";
 import { requireChief } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
@@ -52,53 +52,53 @@ export default async function FundsPage({
   const params = await resolveSearchParams(searchParams);
   const statusFilter = getStatusFilter(params.status);
 
-  const funds = await prisma.fund.findMany({
-    where: {
-      villageId,
-      ...(statusFilter ? { status: statusFilter } : undefined),
-    },
-    orderBy: {
-      createdAt: "desc",
-    },
-    select: {
-      id: true,
-      name: true,
-      villageTargetAmount: true,
-      startDate: true,
-      endDate: true,
-      status: true,
-    },
-  });
+  // One snapshot and one grouped payment query for the entire displayed list.
+  // No full-report request per fund and no reconstructed household obligations.
+  const items = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+    const funds = await tx.fund.findMany({
+      where: {
+        villageId,
+        ...(statusFilter ? { status: statusFilter } : undefined),
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+      select: {
+        id: true,
+        name: true,
+        villageTargetAmount: true,
+        startDate: true,
+        endDate: true,
+        status: true,
+      },
+    });
 
-  const acceptedTotals = await prisma.payment.groupBy({
-    by: ["fundId"],
-    where: {
-      villageId,
-      status: PaymentStatus.ACCEPTED,
-    },
-    _sum: {
-      amount: true,
-    },
-  });
+    const acceptedTotals = await tx.payment.groupBy({
+      by: ["fundId"],
+      where: {
+        villageId,
+        status: PaymentStatus.ACCEPTED,
+        fundId: { in: funds.map((fund) => fund.id) },
+      },
+      _sum: {
+        amount: true,
+      },
+    });
 
-  const collectedByFund = new Map<string, number>();
+    const collectedByFund = new Map<string, number>();
 
-  for (const row of acceptedTotals) {
-    collectedByFund.set(row.fundId, row._sum.amount ?? 0);
-  }
+    for (const row of acceptedTotals) {
+      collectedByFund.set(row.fundId, row._sum.amount ?? 0);
+    }
 
-  return (
-    <FundList
-      funds={funds.map((fund) => ({
-        id: fund.id,
-        name: fund.name,
-        status: fund.status,
-        targetAmount: fund.villageTargetAmount,
-        collectedAmount: collectedByFund.get(fund.id) ?? 0,
-        startDate: fund.startDate.toISOString(),
-        endDate: fund.endDate.toISOString(),
-      }))}
-      statusFilter={statusFilter ?? null}
-    />
-  );
+    return funds.map((fund) => ({
+      id: fund.id, name: fund.name, status: fund.status,
+      villageTargetAmount: fund.villageTargetAmount,
+      acceptedCollectionAmount: collectedByFund.get(fund.id) ?? 0,
+      startDate: fund.startDate.toISOString(), endDate: fund.endDate.toISOString(),
+    }));
+  }, { isolationLevel: "RepeatableRead", maxWait: 2_000, timeout: 5_000 });
+
+  return <FundList funds={items} statusFilter={statusFilter ?? null} />;
 }

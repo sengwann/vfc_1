@@ -31,10 +31,8 @@ export default async function VillageAuditPage({
 
   const params = await resolveSearchParams(searchParams);
   const filters = parseAuditFilters(params);
-  const { logs, total, totalPages } = await getChiefAuditLogs({
-    villageId,
-    filters,
-  });
+  const result = filters.dateRange.ok
+    ? await getChiefAuditLogs({ villageId, filters }) : null;
 
   const rawActionType = getFirstString(params.actionType);
   const rawEntityType = getFirstString(params.entityType);
@@ -48,11 +46,11 @@ export default async function VillageAuditPage({
   if (filters.entityType) {
     filterParams.set("entityType", filters.entityType);
   }
-  if (rawDateFrom) {
-    filterParams.set("dateFrom", rawDateFrom);
+  if (filters.dateRange.ok && filters.dateRange.from) {
+    filterParams.set("dateFrom", filters.dateRange.from);
   }
-  if (rawDateTo) {
-    filterParams.set("dateTo", rawDateTo);
+  if (filters.dateRange.ok && filters.dateRange.to) {
+    filterParams.set("dateTo", filters.dateRange.to);
   }
   const baseQuery = filterParams.toString();
   const hasActiveFilters = baseQuery !== "";
@@ -65,6 +63,8 @@ export default async function VillageAuditPage({
       />
 
       <AuditFiltersForm
+        key={JSON.stringify([params.actionType, params.entityType, params.dateFrom, params.dateTo])}
+        dateError={filters.dateRange.ok ? undefined : filters.dateRange.error}
         actionTypeOptions={ACTION_TYPE_OPTIONS}
         basePath="/village/audit"
         entityTypeOptions={ENTITY_TYPE_OPTIONS}
@@ -76,26 +76,30 @@ export default async function VillageAuditPage({
         showEntityTypeFilter={true}
       />
 
-      {total > 0 ? (
-        <p aria-live="polite" className="text-sm text-muted-foreground">
-          {fillTemplate(t("audit.summary"), { total })}
-        </p>
+      {result ? (
+        <>
+          {result.total > 0 ? (
+            <p aria-live="polite" className="text-sm text-muted-foreground">
+              {fillTemplate(t("audit.summary"), { total: result.total })}
+            </p>
+          ) : null}
+
+          <AuditLogList
+            basePath="/village/audit"
+            hasActiveFilters={hasActiveFilters}
+            language={language}
+            logs={result.logs}
+          />
+
+          <AuditPagination
+            basePath="/village/audit"
+            baseQuery={baseQuery}
+            currentPage={filters.page}
+            language={language}
+            totalPages={result.totalPages}
+          />
+        </>
       ) : null}
-
-      <AuditLogList
-        basePath="/village/audit"
-        hasActiveFilters={hasActiveFilters}
-        language={language}
-        logs={logs}
-      />
-
-      <AuditPagination
-        basePath="/village/audit"
-        baseQuery={baseQuery}
-        currentPage={filters.page}
-        language={language}
-        totalPages={totalPages}
-      />
     </div>
   );
 }

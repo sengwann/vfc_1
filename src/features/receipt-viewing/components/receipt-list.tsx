@@ -25,11 +25,8 @@ export interface ReceiptListItem {
 
 export function ReceiptList({
   receipts,
-  limit,
 }: {
   receipts: ReceiptListItem[];
-  /** The page's query limit; used only to explain that older receipts exist. */
-  limit?: number;
 }) {
   const { t } = useTranslation();
 
@@ -48,7 +45,6 @@ export function ReceiptList({
       ? t("receipts.list.countOne")
       : t("receipts.list.countOther")
   ).replace("{count}", count);
-  const limited = limit !== undefined && receipts.length >= limit;
 
   return (
     <div className="space-y-3">
@@ -96,7 +92,7 @@ export function ReceiptList({
                         {formatYangonDateTime(receipt.payment.createdAt)}
                       </time>
                       <span aria-hidden="true"> · </span>
-                      Cash
+                      {t("history.cash")}
                     </p>
                     <ChevronRight
                       aria-hidden
@@ -110,11 +106,6 @@ export function ReceiptList({
         })}
       </ul>
 
-      {limited ? (
-        <p className="text-sm text-muted-foreground">
-          {t("receipts.list.limitNote").replace("{count}", String(limit))}
-        </p>
-      ) : null}
     </div>
   );
 }

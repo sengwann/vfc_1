@@ -1,11 +1,11 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -24,12 +24,14 @@ export interface CashPageViewProps {
   fund: { id: string; name: string; villageTargetAmount: number; termsVersion: number } | null;
   houses: HouseOption[];
   payments: CashPaymentListItem[];
+  history?: ReactNode;
 }
 
 export function CashPageView({
   fund,
   houses,
   payments,
+  history,
 }: CashPageViewProps) {
   const { t } = useTranslation();
   const minimumAmount = houses[0]?.assessmentAmount;
@@ -54,7 +56,7 @@ export function CashPageView({
           title={t("cashPay.noFundTitle")}
         />
       ) : (
-        <div className="space-y-6 lg:grid lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)] lg:items-start lg:gap-6 lg:space-y-0">
+        <div className="max-w-2xl space-y-6">
           <div className="space-y-4">
             <Card>
               <CardHeader className="pb-3 sm:pb-3">
@@ -104,15 +106,11 @@ export function CashPageView({
             )}
           </div>
 
-          <Section
-            description={t("cashPay.list.description")}
-            id="recent-cash-payments"
-            title={t("cashPay.list.title")}
-          >
-            <CashPaymentList payments={payments} />
-          </Section>
         </div>
       )}
+      <Section description={t("cashPay.list.description")} id="recent-cash-payments" title={t("history.cashTitle")}>
+        {history ?? <CashPaymentList payments={payments} />}
+      </Section>
     </div>
   );
 }

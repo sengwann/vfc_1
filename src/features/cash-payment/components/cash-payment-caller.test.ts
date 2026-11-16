@@ -9,6 +9,10 @@ const mocks = vi.hoisted(() => ({
   tx: { fund: { findFirst: vi.fn() }, fundHouseAssessment: { findFirst: vi.fn() }, user: { findFirst: vi.fn() }, payment: { findFirst: vi.fn(), create: vi.fn() }, receipt: { create: vi.fn() }, $queryRaw: vi.fn() },
   transaction: vi.fn(),
 }));
+vi.mock("@/features/payment-history/lib/history-queries", () => ({ getCashHistory: async () => ({
+  ok: true, villageId: "v", accessLevel: "collector", funds: [], baseQuery: "", older: null, newer: null, receipts: [],
+  payments: await mocks.payments(),
+}) }));
 vi.mock("@/lib/prisma", () => ({ prisma: { fund: { findFirst: mocks.fund }, payment: { findMany: mocks.payments }, house: { findMany: mocks.liveHouses }, $transaction: mocks.transaction } }));
 vi.mock("@/lib/authz", () => ({ requireActiveCollector: async () => ({ villageId: "v" }) }));
 vi.mock("@/lib/authz/transaction-authority", async (original) => ({ ...await original<typeof import("@/lib/authz/transaction-authority")>(), authorizeFinancialTransaction: mocks.authority }));
@@ -51,7 +55,15 @@ describe("cash payment caller contract", () => {
     const { html } = await renderedForm();
     expect(html).toContain("HISTORY-FROZEN"); expect(html).not.toContain("LIVE-HISTORY-NUMBER");
     expect(html).toContain('value="active-payment"'); expect(html).not.toContain('value="closed-payment"');
-    expect(mocks.payments).toHaveBeenCalledWith(expect.objectContaining({ where: { villageId: "v" }, select: expect.objectContaining({ assessment: { select: { houseNumberSnapshot: true } }, fund: { select: { status: true } } }) }));
+    expect(mocks.payments).toHaveBeenCalledTimes(1); // Query selection is checked in history-queries.test.ts.
+  });
+  it("retains history when there is no ACTIVE Fund", async () => {
+    mocks.fund.mockResolvedValue(null);
+    mocks.payments.mockResolvedValue([{ id: "old", amount: 1001, status: "VOIDED", createdAt: new Date("2026-01-01"), voidReason: "Correction", assessment: { houseNumberSnapshot: "OLD-FROZEN" }, fund: { status: "CLOSED", name: "Historical Fund" }, payer: { name: "Payer" } }]);
+    const html = renderToStaticMarkup(createElement(TranslationProvider, { language: "EN", children: await CashPage() }));
+    expect(html).toContain("OLD-FROZEN"); expect(html).toContain("Historical Fund");
+    expect(html).not.toContain('name="fundId" value=');
+    expect(html).not.toContain('name="paymentId"');
   });
   it("renders and submits the displayed Fund identity/version and frozen amount through the real action", async () => {
     const { html, data } = await renderedForm();

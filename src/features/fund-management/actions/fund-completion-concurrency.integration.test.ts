@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import { disposable, migration } from "../lib/fund-migration-test-support";
 import { activate, pay } from "../lib/fund-schema-test-support";
 import { getCurrentPeriod } from "@/lib/authz/collector-period";
-type Context = { client: PrismaClient; actor?: string; before?: (tx: Prisma.TransactionClient) => Promise<void>; after?: () => Promise<void>; onError?: (error: unknown) => Promise<void>; transactions?: Prisma.TransactionClient[]; attempts: number };
+type Context = { productionTimeout?: boolean; client: PrismaClient; actor?: string; before?: (tx: Prisma.TransactionClient) => Promise<void>; after?: () => Promise<void>; onError?: (error: unknown) => Promise<void>; transactions?: Prisma.TransactionClient[]; attempts: number };
 const b = await vi.hoisted(async () => { const { AsyncLocalStorage } = await import("node:async_hooks"); return { request: new AsyncLocalStorage<Context>() }; });
 function context() { const c=b.request.getStore(); if(!c) throw new Error("No request context"); return c; }
 vi.mock("@/lib/authz", () => ({ requireChief:async()=>({villageId:"v"}),requireActiveCollector:async()=>({villageId:"v"}) }));
@@ -27,7 +27,7 @@ vi.mock("@/lib/prisma", () => ({ prisma:new Proxy({}, {get(_target,key){
     try { result = await body(tx); }
     catch (error) { await c.onError?.(error); throw error; }
     await c.after?.(); return result;
-  },{...options,timeout:20000});
+  },c.productionTimeout ? options : {...options,timeout:20000});
   const value=Reflect.get(client,key);return typeof value==="function"?value.bind(client):value;
 }}) }));
 import { extendFundAction } from "./extend-fund.action";
@@ -98,14 +98,18 @@ const races: { first:Operation; second:Operation; paid:boolean; expired:boolean;
   {first:"close",second:"pay",paid:true,expired:false,closed:false,replacement:true},
 ];
 describe.skipIf(!enabled)("Phase 6 coordinated real-operation races",()=>{
-  it.each(races)("$first before $second",async({first:kind,second:nextKind,paid,expired,closed,replacement})=>{
+  it.each(races.flatMap((race) => [
+    { ...race, productionTimeout: false },
+    ...((race.first === "pay" && race.second === "close") || (race.first === "void" && race.second === "close")
+      ? [{ ...race, productionTimeout: true }] : []),
+  ]))("$first before $second; production timeout=$productionTimeout",async({first:kind,second:nextKind,paid,expired,closed,replacement,productionTimeout})=>{
     await fixture(expired,paid,async(p,other,raw,next)=>{
       if(replacement) expect(await b.request.run({client:p,attempts:0},()=>operation("void",next))).toEqual({success:true});
       const held=gate(),release=gate(),snapshot=gate(),committed=gate(),busy=gate(),retry=gate();
       const rejectedFirst = kind === "close" && !closed;
       const revisionBefore = (await raw.query(`SELECT revision FROM "VillageFinancialWriteLock" WHERE "villageId"='v'`)).rows[0].revision;
       const hold = async () => { held.open(); await release.reached; };
-      const firstContext:Context={client:p,attempts:0,
+      const firstContext:Context={client:p,attempts:0,productionTimeout,
         after: rejectedFirst ? undefined : hold,
         onError: rejectedFirst ? async(error) => {
           expect(error).toBeInstanceOf(FundWriteError);
@@ -114,7 +118,7 @@ describe.skipIf(!enabled)("Phase 6 coordinated real-operation races",()=>{
           await hold();
         } : undefined,
       };
-      const secondContext:Context={client:other,attempts:0,transactions:[],onError: rejectedFirst ? async(error) => { expectScopeBusy(error); busy.open(); await retry.reached; } : undefined,actor:nextKind==="suspend"?"admin":"v",before:async(tx)=>{
+      const secondContext:Context={client:other,attempts:0,productionTimeout,transactions:[],onError: rejectedFirst ? async(error) => { expectScopeBusy(error); busy.open(); await retry.reached; } : undefined,actor:nextKind==="suspend"?"admin":"v",before:async(tx)=>{
         if(!rejectedFirst && secondContext.attempts===1){await tx.$queryRaw`SELECT id FROM "Village" WHERE id='v'`;snapshot.open();await committed.reached;}
       }};
       const first=observe<unknown>(b.request.run(firstContext,()=>operation(kind,next)));let second:ReturnType<typeof observe<unknown>>|undefined;
@@ -136,6 +140,9 @@ describe.skipIf(!enabled)("Phase 6 coordinated real-operation races",()=>{
         if (!rejectedFirst) expect(secondContext.attempts).toBe(2);
         else expect(secondContext.attempts).toBeGreaterThan(1); // confirmed NOWAIT abort, not a rolled-back revision
         expect(new Set(secondContext.transactions).size).toBe(secondContext.attempts);
+        expect(firstContext.attempts).toBeLessThanOrEqual(4);
+        expect(secondContext.attempts).toBeLessThanOrEqual(4);
+        expect(await other.$queryRaw`SELECT 1 AS recovered`).toEqual([{ recovered: 1 }]);
         if(kind==="close")expectClosure(a,closed ? undefined : unpaidClosure);
         else expect(a).toEqual({value:{success:true}});
         if(nextKind==="close")expectClosure(z,closed ? undefined : kind === "extend" ? staleTerms : unpaidClosure);

@@ -51,6 +51,11 @@ class CloseDeadlineError extends SandboxError {}
 // This bounds waiting only. It does NOT cancel the underlying close promise;
 // Promise.race keeps a rejection handler attached if that operation settles late.
 async function bounded<T>(work: Promise<T>, phase: string): Promise<T> {
+  if(process.env.VFC_RUN_PHASE7_RELEASE==="1") {
+    const started=Date.now();const value=await work;
+    if(Date.now()-started>10000)throw new CloseDeadlineError(`${phase} exceeded 10s budget; operation completed late`);
+    return value;
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -76,6 +81,8 @@ export async function startReportPostgresSandbox(): Promise<{
   db: TestDatabase;
   dispose: () => Promise<void>;
   applicationName: string;
+  withConnection: <T>(run: (url: string) => Promise<T>) => Promise<T>;
+  createEmptyDatabase: () => Promise<string>;
 }> {
   if (
     process.env.VFC_RUN_REPORT_POSTGRES_TESTS !== "1" ||
@@ -407,7 +414,37 @@ export async function startReportPostgresSandbox(): Promise<{
     await verifyParent();
     await verifyChild();
     await verifyEndpoint();
-    return { db, dispose, applicationName: runName };
+    const ownedDatabases = new Set(["vfc_test"]);
+    async function attest() {
+      await verifyParent(); await verifyChild(); await verifyEndpoint();
+      if (!branchId || deletionConfirmed || !db) throw new SandboxError("Sandbox is closed");
+    }
+    async function createEmptyDatabase() {
+      if (process.env.VFC_RUN_PHASE7_RELEASE !== "1") throw new SandboxError("Release opt-in required");
+      await attest();
+      const name = `vfc_test_${randomUUID().replaceAll("-", "")}`;
+      const result = object((await api(`${prefix}/branches/${branchId}/databases`, "POST", {
+        database: { name, owner_name: role },
+      })).database);
+      if (result.name !== name || result.branch_id !== branchId || result.owner_name !== role)
+        throw new SandboxError("Created database identity mismatch");
+      // No SQL deletion: the owned child contains this database until disposal.
+      ownedDatabases.add(name);
+      await attest();
+      const target = new URL(url); target.pathname = `/${name}`;
+      return target.toString();
+    }
+    async function withConnection<T>(run: (connection: string) => Promise<T>) {
+      if (process.env.VFC_RUN_PHASE7_RELEASE !== "1") throw new SandboxError("Release opt-in required");
+      await attest();
+      const current = (await api(`${prefix}/branches/${branchId}/databases`)).databases;
+      if (!Array.isArray(current) || !current.some((value) => {
+        const candidate = object(value);
+        return candidate.branch_id === branchId && ownedDatabases.has(String(candidate.name));
+      })) throw new SandboxError("Child database metadata unavailable");
+      return run(url.toString());
+    }
+    return { db, dispose, applicationName: runName, withConnection, createEmptyDatabase };
   } catch (error) {
     // Controlled messages only: raw driver errors can contain credentials.
     const setupError =

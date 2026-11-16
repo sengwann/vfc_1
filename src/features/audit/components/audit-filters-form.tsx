@@ -5,6 +5,7 @@ import { useId, useState, useTransition } from "react";
 import type { FormEvent } from "react";
 import { ChevronDown, SlidersHorizontal } from "lucide-react";
 
+import type { FinancialDateRangeError } from "@/lib/financial-date-range";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -32,6 +33,7 @@ export function AuditFiltersForm({
   initialDateFrom,
   initialDateTo,
   showEntityTypeFilter,
+  dateError,
 }: {
   basePath: string;
   actionTypeOptions: string[];
@@ -42,6 +44,7 @@ export function AuditFiltersForm({
   initialDateFrom: string;
   initialDateTo: string;
   showEntityTypeFilter: boolean;
+  dateError?: FinancialDateRangeError;
 }) {
   const router = useRouter();
   const { t } = useTranslation();
@@ -61,7 +64,7 @@ export function AuditFiltersForm({
   ].filter(Boolean).length;
   const hasActiveFilters = activeCount > 0;
 
-  const [open, setOpen] = useState(hasActiveFilters);
+  const [open, setOpen] = useState(hasActiveFilters || Boolean(dateError));
 
   /*
    * Entity types offered for an action. The page's mapping is honoured; values
@@ -125,6 +128,11 @@ export function AuditFiltersForm({
   return (
     <Card>
       <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground">{t("audit.filters.timezone")}</p>
+        {dateError ? <p role="alert" className="text-sm text-destructive">{t(dateError === "REVERSED"
+          ? "audit.filters.dateReversed"
+          : dateError === "REPEATED_FROM" || dateError === "REPEATED_TO"
+            ? "audit.filters.dateRepeated" : "audit.filters.dateInvalid")}</p> : null}
         <Button
           aria-controls={panelId}
           aria-expanded={open}
@@ -194,7 +202,8 @@ export function AuditFiltersForm({
             <Field id="audit-dateFrom" label={t("audit.filters.from")}>
               <Input
                 onChange={(event) => setDateFrom(event.target.value)}
-                type="date"
+                type={dateError ? "text" : "date"}
+                placeholder="YYYY-MM-DD"
                 value={dateFrom}
               />
             </Field>
@@ -202,7 +211,8 @@ export function AuditFiltersForm({
             <Field id="audit-dateTo" label={t("audit.filters.to")}>
               <Input
                 onChange={(event) => setDateTo(event.target.value)}
-                type="date"
+                type={dateError ? "text" : "date"}
+                placeholder="YYYY-MM-DD"
                 value={dateTo}
               />
             </Field>

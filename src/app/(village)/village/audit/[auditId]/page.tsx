@@ -64,7 +64,9 @@ export default async function VillageAuditDetailPage({
         title={t("audit.detail.title")}
       />
 
+      {audit.fundId ? <a className="underline" href={`/village/funds/${encodeURIComponent(audit.fundId)}/audit`}>{t("funds.history.audit")}</a> : null}
       <AuditDetailCard
+        financial={Boolean(audit.fundId)}
         actionType={audit.actionType}
         actorName={audit.actorName}
         createdAt={audit.createdAt}
