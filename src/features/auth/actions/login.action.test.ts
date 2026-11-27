@@ -46,6 +46,7 @@ const allowed = {
 const activeUser = {
   id: "u1",
   passwordHash: "stored-hash",
+  sessionVersion: 7,
   role: UserRole.VILLAGER,
   villageId: "v1",
   village: { status: VillageStatus.ACTIVE },
@@ -64,6 +65,7 @@ beforeEach(() => {
   mocks.reserveLoginAttempt.mockResolvedValue({ ...allowed });
   mocks.findFirst.mockResolvedValue(activeUser);
   mocks.verifyPassword.mockResolvedValue(true);
+  mocks.createSession.mockResolvedValue(true);
   mocks.tryCreateAuditLog.mockResolvedValue(undefined);
 });
 
@@ -76,11 +78,29 @@ describe("loginAction", () => {
       expect.anything(),
       "key-hash",
     );
-    expect(mocks.createSession).toHaveBeenCalledWith("u1");
+    expect(mocks.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ passwordHash: true, sessionVersion: true }),
+      }),
+    );
+    expect(mocks.createSession).toHaveBeenCalledWith("u1", 7);
     expect(mocks.tryCreateAuditLog).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ actionType: "LOGIN" }),
     );
+  });
+
+  it("keeps the throttle and skips the success audit when the credentials went stale", async () => {
+    mocks.createSession.mockResolvedValueOnce(false);
+
+    expect(await loginAction(form("a@b.co"))).toEqual({
+      success: false,
+      code: "INVALID_CREDENTIALS",
+      error: "Invalid credentials.",
+    });
+    expect(mocks.reserveLoginAttempt).toHaveBeenCalledOnce();
+    expect(mocks.clearLoginThrottle).not.toHaveBeenCalled();
+    expect(mocks.tryCreateAuditLog).not.toHaveBeenCalled();
   });
 
   it("returns the same generic error for unknown user and wrong password", async () => {
