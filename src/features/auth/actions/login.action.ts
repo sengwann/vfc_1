@@ -78,6 +78,7 @@ export async function loginAction(formData: FormData): Promise<LoginResult> {
     select: {
       id: true,
       passwordHash: true,
+      sessionVersion: true,
       role: true,
       villageId: true,
       mustChangePassword: true,
@@ -146,9 +147,11 @@ export async function loginAction(formData: FormData): Promise<LoginResult> {
     }
   }
 
-  await clearLoginThrottle(prisma, throttle.identifierKeyHash);
+  if (!(await createSession(user.id, user.sessionVersion))) {
+    return invalidCredentials();
+  }
 
-  await createSession(user.id);
+  await clearLoginThrottle(prisma, throttle.identifierKeyHash);
 
   await tryCreateAuditLog(prisma, {
     actionType: AuditActionType.LOGIN,

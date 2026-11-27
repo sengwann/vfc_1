@@ -25,17 +25,22 @@ function getSessionSecretKey(): Uint8Array {
   return new TextEncoder().encode(secret);
 }
 
-export async function createSession(userId: string): Promise<void> {
+export async function createSession(
+  userId: string,
+  verifiedSessionVersion: number,
+): Promise<boolean> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { sessionVersion: true },
   });
 
-  if (!user) {
-    throw new Error("Cannot create a session for an unknown user.");
+  if (!user || user.sessionVersion !== verifiedSessionVersion) {
+    return false;
   }
 
-  const token = await new SignJWT({ sessionVersion: user.sessionVersion })
+  // Credentials were verified against this version. If revocation races
+  // cookie delivery, the request-time version check rejects this token.
+  const token = await new SignJWT({ sessionVersion: verifiedSessionVersion })
     .setProtectedHeader({ alg: SESSION_JWT_ALGORITHM })
     .setSubject(userId)
     .setIssuedAt()
@@ -52,6 +57,7 @@ export async function createSession(userId: string): Promise<void> {
     path: "/",
     maxAge: AUTH_SESSION_MAX_AGE_SECONDS,
   });
+  return true;
 }
 
 export async function revokeUserSessions(userId: string): Promise<void> {
