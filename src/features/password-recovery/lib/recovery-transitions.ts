@@ -41,8 +41,9 @@ import {
   hashRecoveryCode,
   verifyRecoveryCode,
 } from "./recovery-code";
+import type { RecoveryApprover } from "./recovery-guard";
 import type { RecoveryRequestInput } from "./recovery-input";
-import { lockRecoveryTarget } from "./recovery-credential-lock";
+import { lockRecoveryDecisionUsers, lockRecoveryTarget } from "./recovery-credential-lock";
 import { syncRecoveryNotifications } from "./recovery-notifications";
 import {
   computeCodeExpiresAt,
@@ -192,20 +193,27 @@ async function loadTargetFacts(
 
 async function loadActor(
   tx: Tx,
-  actorUserId: string,
+  approver: RecoveryApprover,
+  verifiedPasswordHash?: string,
 ): Promise<AuthorityActor | null> {
   const user = await tx.user.findUnique({
-    where: { id: actorUserId },
+    where: { id: approver.userId },
     select: {
       id: true,
       role: true,
       villageId: true,
       membershipStatus: true,
+      sessionVersion: true,
+      mustChangePassword: true,
+      passwordHash: verifiedPasswordHash !== undefined,
       village: { select: { status: true } },
     },
   });
 
-  if (!user) {
+  if (!user ||
+      user.sessionVersion !== approver.sessionVersion ||
+      user.mustChangePassword ||
+      (verifiedPasswordHash !== undefined && user.passwordHash !== verifiedPasswordHash)) {
     return null;
   }
 
@@ -240,17 +248,33 @@ async function loadAuthorizedRequest(
   tx: Tx,
   input: {
     requestId: string;
-    actorUserId: string;
+    actor: RecoveryApprover;
+    verifiedPasswordHash?: string;
     actionType: AuditActionType;
   },
 ): Promise<{ request: RequestRow; target: TargetFacts } | null> {
-  // Resolve only the immutable target ID before taking its lock. Evaluate
-  // status and other request state only after the target lock is held.
+  // Resolve only the immutable target ID before locking. Request state is
+  // evaluated after the approver and target locks are held.
   const locator = await tx.passwordRecoveryRequest.findUnique({
     where: { id: input.requestId },
     select: { userId: true },
   });
-  if (!locator || !(await lockRecoveryTarget(tx, locator.userId))) return null;
+  if (!locator) return null;
+
+  // Chief eligibility depends on the Village row as well as the actor. Lock it
+  // before User rows, in the same order as village lifecycle transactions.
+  let chiefVillageStatus: RecoveryVillageStatus | null = null;
+  if (input.actor.role === "CHIEF") {
+    const [village] = await tx.$queryRaw<{ status: RecoveryVillageStatus }[]>`
+      SELECT status::text AS status FROM public."Village"
+      WHERE id = ${input.actor.villageId} FOR SHARE
+    `;
+    chiefVillageStatus = village?.status ?? null;
+  }
+
+  if (!(await lockRecoveryDecisionUsers(tx, input.actor.userId, locator.userId))) return null;
+  const actor = await loadActor(tx, input.actor, input.verifiedPasswordHash);
+  if (!actor) return null;
 
   const request = await tx.passwordRecoveryRequest.findUnique({
     where: { id: input.requestId, userId: locator.userId },
@@ -261,14 +285,8 @@ async function loadAuthorizedRequest(
     return null;
   }
 
-  const [actor, target] = await Promise.all([
-    loadActor(tx, input.actorUserId),
-    loadTargetFacts(tx, request.userId),
-  ]);
-
-  if (!actor || !target) {
-    return null;
-  }
+  const target = await loadTargetFacts(tx, request.userId);
+  if (!target) return null;
 
   const chiefCount =
     target.role === "VILLAGER" && request.villageId
@@ -281,12 +299,14 @@ async function loadAuthorizedRequest(
     activeChiefCountInTargetVillage: chiefCount,
   });
 
-  if (!decision.allowed) {
+  const chiefAuthorityChanged = input.actor.role === "CHIEF" &&
+    (chiefVillageStatus !== "ACTIVE" || actor.villageId !== input.actor.villageId);
+  if (actor.role !== input.actor.role || chiefAuthorityChanged || !decision.allowed) {
     await audit(tx, {
       actionType: input.actionType,
       entityId: request.id,
       villageId: request.villageId,
-      actorUserId: input.actorUserId,
+      actorUserId: actor.id,
       metadata: {
         event: "AUTHORITY_REFUSED",
         requestId: request.id,
@@ -475,18 +495,21 @@ export async function issueRecoveryCodeInTx(
   tx: Tx,
   params: {
     requestId: string;
-    actorUserId: string;
+    actor: RecoveryApprover;
+    verifiedPasswordHash: string;
     /** AUTH_SECRET (read by the caller, so this file reads no environment). */
     secret: string;
     generateCode?: () => string;
     now?: Date;
   },
 ): Promise<IssueOutcome> {
-  const { requestId, actorUserId } = params;
+  const { requestId, actor, verifiedPasswordHash } = params;
+  const actorUserId = actor.userId;
 
   const loaded = await loadAuthorizedRequest(tx, {
     requestId,
-    actorUserId,
+    actor,
+    verifiedPasswordHash,
     actionType: AuditActionType.APPROVE,
   });
 
@@ -648,7 +671,7 @@ export async function rejectRecoveryRequestInTx(
   tx: Tx,
   params: {
     requestId: string;
-    actorUserId: string;
+    actor: RecoveryApprover;
     note: unknown;
     now?: Date;
   },
@@ -661,7 +684,7 @@ export async function rejectRecoveryRequestInTx(
 
   const loaded = await loadAuthorizedRequest(tx, {
     requestId: params.requestId,
-    actorUserId: params.actorUserId,
+    actor: params.actor,
     actionType: AuditActionType.REJECT,
   });
 
@@ -679,7 +702,7 @@ export async function rejectRecoveryRequestInTx(
       codeExpiresAt: request.codeExpiresAt,
       targetUserId: request.userId,
     },
-    actorUserId: params.actorUserId,
+    actorUserId: params.actor.userId,
     now,
   });
 
@@ -695,7 +718,7 @@ export async function rejectRecoveryRequestInTx(
     where: { id: request.id, status: "PENDING" },
     data: {
       status: "REJECTED",
-      rejectedByUserId: params.actorUserId,
+      rejectedByUserId: params.actor.userId,
       rejectedAt: now,
       rejectionNote: note.note,
     },
@@ -709,7 +732,7 @@ export async function rejectRecoveryRequestInTx(
     actionType: AuditActionType.REJECT,
     entityId: request.id,
     villageId: request.villageId,
-    actorUserId: params.actorUserId,
+    actorUserId: params.actor.userId,
     metadata: {
       event: "REJECTED",
       requestId: request.id,
@@ -739,7 +762,7 @@ export async function withdrawRecoveryCodeInTx(
   tx: Tx,
   params: {
     requestId: string;
-    actorUserId: string;
+    actor: RecoveryApprover;
     note: unknown;
     now?: Date;
   },
@@ -755,7 +778,7 @@ export async function withdrawRecoveryCodeInTx(
 
   const loaded = await loadAuthorizedRequest(tx, {
     requestId: params.requestId,
-    actorUserId: params.actorUserId,
+    actor: params.actor,
     actionType: AuditActionType.CANCEL,
   });
 
@@ -773,7 +796,7 @@ export async function withdrawRecoveryCodeInTx(
       codeExpiresAt: request.codeExpiresAt,
       targetUserId: request.userId,
     },
-    actorUserId: params.actorUserId,
+    actorUserId: params.actor.userId,
     now,
   });
 
@@ -790,7 +813,7 @@ export async function withdrawRecoveryCodeInTx(
     data: {
       status: "REVOKED",
       revokedAt: now,
-      revokedByUserId: params.actorUserId,
+      revokedByUserId: params.actor.userId,
       revocationReason: "WITHDRAWN",
       revocationNote: note.note,
       codeHash: null,
@@ -805,7 +828,7 @@ export async function withdrawRecoveryCodeInTx(
     actionType: AuditActionType.CANCEL,
     entityId: request.id,
     villageId: request.villageId,
-    actorUserId: params.actorUserId,
+    actorUserId: params.actor.userId,
     metadata: {
       event: "CODE_REVOKED",
       requestId: request.id,

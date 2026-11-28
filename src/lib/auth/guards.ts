@@ -3,7 +3,7 @@ import "server-only";
 import { redirect } from "next/navigation";
 
 import { CHANGE_PASSWORD_ROUTE, LOGIN_ROUTE } from "./auth.constants";
-import { getCurrentUser } from "./session";
+import { getCurrentUser, getSessionIdentity } from "./session";
 import type { SessionUser } from "./auth.types";
 
 /**
@@ -38,4 +38,12 @@ export async function requireAuthenticatedUser(): Promise<SessionUser> {
   }
 
   return user;
+}
+
+/** For guarded writes that must carry the original signed version into a transaction. */
+export async function requireAuthenticatedUserWithIdentity() {
+  const user = await requireAuthenticatedUser();
+  const identity = await getSessionIdentity();
+  if (!identity || identity.userId !== user.id) return redirect(LOGIN_ROUTE);
+  return { user, identity };
 }

@@ -38,7 +38,7 @@ async function decide(decision: Decision, formData: FormData): Promise<never> {
     try {
       const params = {
         requestId,
-        actorUserId: approver.id,
+        actor: approver,
         note: formData.get("note"),
       };
 

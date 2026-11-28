@@ -134,9 +134,14 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("credential replacement (Postgre
     }, { isolationLevel: "Serializable", timeout: 15_000 }));
   }
 
+  function approver() {
+    return { userId: approverId, sessionVersion: 0, role: "SYSTEM_ADMIN" } as const;
+  }
+
   function issue(tx: Tx, requestId: string, code = originalCode) {
     return issueRecoveryCodeInTx(tx, {
-      actorUserId: approverId, requestId, secret: codeSecret, generateCode: () => code,
+      actor: approver(), verifiedPasswordHash: currentHash,
+      requestId, secret: codeSecret, generateCode: () => code,
     });
   }
 
@@ -332,7 +337,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("credential replacement (Postgre
   it("routine seed preserves valid recovery and explicit seed replacement revokes it without altering history", async () => {
     const historicalId = await fileRequest();
     expect(await recovery((tx) => rejectRecoveryRequestInTx(tx, {
-      requestId: historicalId, actorUserId: approverId, note: null,
+      requestId: historicalId, actor: approver(), note: null,
     }))).toMatchObject({ kind: "rejected" });
     const history = await readRequest(historicalId);
     const requestId = await issueRequest();
@@ -367,8 +372,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("credential replacement (Postgre
     switch (operation) {
       case "issue": return { id, run: (tx) => issue(tx, id) };
       case "reissue": return { id, run: (tx) => issue(tx, id, replacementCode) };
-      case "reject": return { id, run: (tx) => rejectRecoveryRequestInTx(tx, { requestId: id, actorUserId: approverId, note: null }) };
-      case "withdraw": return { id, run: (tx) => withdrawRecoveryCodeInTx(tx, { requestId: id, actorUserId: approverId, note: "Fixture withdrawal" }) };
+      case "reject": return { id, run: (tx) => rejectRecoveryRequestInTx(tx, { requestId: id, actor: approver(), note: null }) };
+      case "withdraw": return { id, run: (tx) => withdrawRecoveryCodeInTx(tx, { requestId: id, actor: approver(), note: "Fixture withdrawal" }) };
       case "redemption": return { id, run: (tx) => redeem(tx) };
     }
   }

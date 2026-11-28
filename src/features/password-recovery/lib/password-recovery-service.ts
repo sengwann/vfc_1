@@ -11,6 +11,7 @@ import { checkPasswordRules } from "../../../lib/auth/password-rules";
 import { withSerializableRetry } from "../../../lib/db/transaction";
 import { isUniqueViolation } from "../../../lib/db/unique-violation";
 import { prisma } from "../../../lib/prisma";
+import type { RecoveryApprover } from "./recovery-guard";
 import type { RecoveryRequestInput } from "./recovery-input";
 import { deliverRecoveryNotifications } from "./recovery-notifications";
 import {
@@ -213,11 +214,12 @@ export type IssueRecoveryResult =
  */
 export async function issueRecoveryCode(params: {
   requestId: string;
-  actorUserId: string;
+  actor: RecoveryApprover;
   password: string;
   clientIp: string | null;
 }): Promise<IssueRecoveryResult> {
-  const { requestId, actorUserId, password, clientIp } = params;
+  const { requestId, actor: approver, password, clientIp } = params;
+  const actorUserId = approver.userId;
 
   const throttle = await reserveRecoveryStepUp(prisma, {
     approverUserId: actorUserId,
@@ -230,10 +232,10 @@ export async function issueRecoveryCode(params: {
 
   const actor = await prisma.user.findUnique({
     where: { id: actorUserId },
-    select: { passwordHash: true, villageId: true },
+    select: { passwordHash: true, villageId: true, sessionVersion: true },
   });
 
-  if (!actor) {
+  if (!actor || actor.sessionVersion !== approver.sessionVersion) {
     return { kind: "not_found" };
   }
 
@@ -252,23 +254,30 @@ export async function issueRecoveryCode(params: {
     return { kind: "bad_password" };
   }
 
-  await clearRecoveryStepUpThrottle(prisma, throttle.accountKeyHash);
-
   const secret = getThrottleSecret();
-
-  return withSerializableRetry(() =>
+  const verifiedPasswordHash = actor.passwordHash;
+  const outcome = await withSerializableRetry(() =>
     prisma.$transaction(
-      (tx) => issueRecoveryCodeInTx(tx, { requestId, actorUserId, secret }),
+      (tx) => issueRecoveryCodeInTx(tx, {
+        requestId, actor: approver, verifiedPasswordHash, secret,
+      }),
       SERIALIZABLE,
     ),
   );
+
+  // Clear the attempt only after the verified session has committed issuance.
+  if (outcome.kind === "issued") {
+    await clearRecoveryStepUpThrottle(prisma, throttle.accountKeyHash);
+  }
+
+  return outcome;
 }
 
 /* ---------------------------------------------------------- reject/withdraw */
 
 export async function rejectRecoveryRequest(params: {
   requestId: string;
-  actorUserId: string;
+  actor: RecoveryApprover;
   note: unknown;
 }): Promise<RejectOutcome> {
   const outcome = await withSerializableRetry(() =>
@@ -287,7 +296,7 @@ export async function rejectRecoveryRequest(params: {
 
 export async function withdrawRecoveryCode(params: {
   requestId: string;
-  actorUserId: string;
+  actor: RecoveryApprover;
   note: unknown;
 }): Promise<WithdrawOutcome> {
   return withSerializableRetry(() =>

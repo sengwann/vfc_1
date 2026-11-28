@@ -5,8 +5,7 @@ export const PASSWORD_REPLACED_REASON = "PASSWORD_REPLACED";
 /**
  * Acquire user locks before changing recovery requests. NO KEY UPDATE conflicts
  * with credential writes and other target transitions but permits FK checks.
- * If a transition also needs an approver lock, acquire both users in ID order
- * before taking any request lock.
+ * Approver decisions use the two-user variant below.
  */
 export async function lockRecoveryTarget(
   tx: Prisma.TransactionClient,
@@ -16,6 +15,25 @@ export async function lockRecoveryTarget(
     SELECT id FROM public."User" WHERE id = ${userId} FOR NO KEY UPDATE
   `;
   return rows.length === 1;
+}
+
+/**
+ * Take both User locks in database ID order before mutating a recovery request.
+ * If revocation commits while a Serializable decision waits here, retry with
+ * a fresh database snapshot and the original signed version. If the decision
+ * holds the actor lock first, it may commit before revocation proceeds.
+ */
+export async function lockRecoveryDecisionUsers(
+  tx: Prisma.TransactionClient,
+  actorId: string,
+  targetId: string,
+): Promise<boolean> {
+  const rows = await tx.$queryRaw<{ id: string }[]>`
+    SELECT id FROM public."User"
+    WHERE id IN (${actorId}, ${targetId})
+    ORDER BY id FOR NO KEY UPDATE
+  `;
+  return rows.length === (actorId === targetId ? 1 : 2);
 }
 
 /**

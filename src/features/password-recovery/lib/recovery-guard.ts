@@ -2,8 +2,16 @@ import "server-only";
 
 import { UserRole } from "@prisma/client";
 
-import { requireAuthenticatedUser } from "../../../lib/auth/guards";
+import { requireAuthenticatedUserWithIdentity } from "../../../lib/auth/guards";
 import { requireChief, requireSystemAdmin } from "../../../lib/authz";
+
+export type RecoveryApprover = Readonly<{
+  userId: string;
+  sessionVersion: number;
+} & (
+  | { role: "SYSTEM_ADMIN" }
+  | { role: "CHIEF"; villageId: string }
+)>;
 
 /**
  * The signed-in Chief or System Admin, nobody else. A Chief must also be an
@@ -11,17 +19,14 @@ import { requireChief, requireSystemAdmin } from "../../../lib/authz";
  * sent to the forbidden page. Which requests the person may act on is decided
  * again, from the database, inside each transition.
  */
-export async function requireRecoveryApprover(): Promise<{
-  id: string;
-  role: "CHIEF" | "SYSTEM_ADMIN";
-}> {
-  const user = await requireAuthenticatedUser();
+export async function requireRecoveryApprover(): Promise<RecoveryApprover> {
+  const { user, identity } = await requireAuthenticatedUserWithIdentity();
 
   if (user.role === UserRole.SYSTEM_ADMIN) {
     await requireSystemAdmin();
-    return { id: user.id, role: "SYSTEM_ADMIN" };
+    return { ...identity, role: "SYSTEM_ADMIN" };
   }
 
-  await requireChief();
-  return { id: user.id, role: "CHIEF" };
+  const { villageId } = await requireChief();
+  return { ...identity, role: "CHIEF", villageId };
 }

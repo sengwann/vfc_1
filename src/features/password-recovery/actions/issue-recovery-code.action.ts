@@ -50,7 +50,7 @@ export async function issueRecoveryCodeAction(
   try {
     const result = await issueRecoveryCode({
       requestId,
-      actorUserId: approver.id,
+      actor: approver,
       password,
       clientIp: await getClientIp(),
     });
