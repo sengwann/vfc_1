@@ -21,7 +21,7 @@ function receipt() { return { id: "receipt-old", receiptNumber: "VFC-ORIGINAL-00
   payer: { name: "Member" }, collector: { name: "Collector" },
 } }; }
 function render(element: Parameters<typeof renderToStaticMarkup>[0]) {
-  return renderToStaticMarkup(createElement(TranslationProvider, { language: "EN", children: element }));
+  return renderToStaticMarkup(createElement(TranslationProvider, { language: "EN" }, element));
 }
 beforeEach(() => {
   vi.resetAllMocks(); mocks.user.mockResolvedValue(actor); mocks.collector.mockResolvedValue(null);

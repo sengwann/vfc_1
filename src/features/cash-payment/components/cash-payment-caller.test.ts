@@ -26,7 +26,7 @@ const snapshot = () => ({ id: "displayed-fund", name: "Fund", villageTargetAmoun
   assessments: [{ id: "assessment", houseId: "snapshot-house", houseNumberSnapshot: "Frozen H1", assessmentAmount: 1001, house: { members: [{ id: "payer", name: "Payer" }] } }] });
 async function renderedForm() {
   const element = await CashPage();
-  const html = renderToStaticMarkup(createElement(TranslationProvider, { language: "EN", children: element }));
+  const html = renderToStaticMarkup(createElement(TranslationProvider, { language: "EN" }, element));
   const data = new FormData();
   for (const tag of html.match(/<input\b[^>]*>/g) ?? []) {
     if (!tag.includes('type="hidden"')) continue;
@@ -60,7 +60,7 @@ describe("cash payment caller contract", () => {
   it("retains history when there is no ACTIVE Fund", async () => {
     mocks.fund.mockResolvedValue(null);
     mocks.payments.mockResolvedValue([{ id: "old", amount: 1001, status: "VOIDED", createdAt: new Date("2026-01-01"), voidReason: "Correction", assessment: { houseNumberSnapshot: "OLD-FROZEN" }, fund: { status: "CLOSED", name: "Historical Fund" }, payer: { name: "Payer" } }]);
-    const html = renderToStaticMarkup(createElement(TranslationProvider, { language: "EN", children: await CashPage() }));
+    const html = renderToStaticMarkup(createElement(TranslationProvider, { language: "EN" }, await CashPage()));
     expect(html).toContain("OLD-FROZEN"); expect(html).toContain("Historical Fund");
     expect(html).not.toContain('name="fundId" value=');
     expect(html).not.toContain('name="paymentId"');

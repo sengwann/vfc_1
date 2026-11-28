@@ -12,7 +12,7 @@ function render(status: PaymentStatus, fundStatus: FundStatus, endDate = "2027-1
     voidReason: status === "VOIDED" ? "Wrong payer selected" : null,
     assessment: { houseNumberSnapshot: "FROZEN-H1" },
     house: { houseNumber: "LIVE-RENUMBERED" }, fund: { status: fundStatus, endDate: new Date(endDate) }, payer: { name: "Payer" } };
-  return renderToStaticMarkup(createElement(TranslationProvider, { language: "EN", children: createElement(CashPaymentList, { payments: [payment] }) }));
+  return renderToStaticMarkup(createElement(TranslationProvider, { language: "EN" }, createElement(CashPaymentList, { payments: [payment] })));
 }
 describe("cash history identity and void controls", () => {
   it("renders frozen identity, amount, payer and transaction date", () => {

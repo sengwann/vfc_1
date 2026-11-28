@@ -3,9 +3,9 @@ const io=vi.hoisted(()=>({exec:vi.fn(),spawn:vi.fn(),start:vi.fn()}));
 vi.mock("node:child_process",()=>({execFileSync:io.exec,spawn:io.spawn}));
 vi.mock("./report-postgres-sandbox",()=>({startReportPostgresSandbox:io.start}));
 import { checkMode,childEnvironment,account,executeAndDispose,main,suites,recoveryBreadcrumbs } from "../../scripts/phase7-release";
-const enabled={VFC_RUN_PHASE7_RELEASE:"1",VFC_RUN_REPORT_POSTGRES_TESTS:"1",TEST_DATABASE_ALLOW_REMOTE:"1",NODE_ENV:"test"};
+const enabled={VFC_RUN_PHASE7_RELEASE:"1",VFC_RUN_REPORT_POSTGRES_TESTS:"1",TEST_DATABASE_ALLOW_REMOTE:"1",NODE_ENV:"test"} satisfies NodeJS.ProcessEnv;
 it("refuses release execution and unknown modes",()=>{
-  expect(()=>checkMode("units",{})).toThrow();expect(()=>checkMode("all",enabled)).toThrow();
+  expect(()=>checkMode("units",{NODE_ENV:"test"})).toThrow();expect(()=>checkMode("all",enabled)).toThrow();
 });
 it("keeps migration and role opt-ins independent",()=>{
   expect(()=>checkMode("integrity",enabled)).toThrow();expect(()=>checkMode("privileges",enabled)).toThrow();expect(()=>checkMode("reporting",enabled)).not.toThrow();
@@ -46,7 +46,7 @@ it("unit configuration disables environment-file loading and omits every databas
   expect(config.envDir).toBe(false);
   expect(config.test?.hookTimeout).toBe(0);expect(config.test?.testTimeout).toBe(0);
   expect(config.test?.setupFiles).toEqual(["./src/test-support/phase7-release-lifecycle.ts"]);
-  const result=childEnvironment("units",{DATABASE_URL:"secret",DIRECT_URL:"secret",PGHOST:"secret",TEST_DATABASE_URL:"secret",NEON_REPORT_DB_PASSWORD:"secret",VFC_ALLOW_ROLE_TESTS:"1"});
+  const result=childEnvironment("units",{NODE_ENV:"test",DATABASE_URL:"secret",DIRECT_URL:"secret",PGHOST:"secret",TEST_DATABASE_URL:"secret",NEON_REPORT_DB_PASSWORD:"secret",VFC_ALLOW_ROLE_TESTS:"1"});
   for(const key of ["DATABASE_URL","DIRECT_URL","PGHOST","TEST_DATABASE_URL","NEON_REPORT_DB_PASSWORD","VFC_ALLOW_ROLE_TESTS"])expect(Object.hasOwn(result,key)).toBe(false);
 });
 it("case evidence retains failed/skipped identities, redacts reasons and rejects equal-count changed cases",async()=>{
@@ -87,7 +87,12 @@ it.each(["nonzero","skipped","malformed","missing","cleanup","both","signal","in
     const output=args.find(arg=>arg.startsWith("--outputFile="))!.slice(13);
     void (async()=>{
       if(scenario!=="missing")await writeFile(output,scenario==="malformed"?"invalid JSON":JSON.stringify({success:scenario!=="nonzero"&&scenario!=="both",testResults:files.map(file=>({name:process.cwd()+"/"+file,assertionResults:[{fullName:"case",status:scenario==="skipped"?"pending":scenario==="both"?"failed":"passed",pendingReason:"token=secret"}]}))}));
-      child.emit("close",scenario==="signal"?null:scenario==="nonzero"||scenario==="both"?1:0,scenario==="signal"?"SIGTERM":null);
+      // Match a real child process: the runner attaches its listeners after spawn returns.
+      queueMicrotask(() => {
+        const exit = scenario === "nonzero" || scenario === "both" ? 1 : 0;
+        const signal = scenario === "signal" ? "SIGTERM" : null;
+        child.emit("close", signal ? null : exit, signal);
+      });
     })();return child;
   });
   for(const[key,value]of Object.entries({...enabled,VFC_RELEASE_EVIDENCE_DIR:dir,VFC_RELEASE_REVISION:sha,VFC_RELEASE_EXPECTED_COUNTS:inventory,VFC_RELEASE_INVENTORY_SHA256:scenario==="inventory"?"b".repeat(64):digest(text)}))vi.stubEnv(key,value);
@@ -134,6 +139,9 @@ it.each(["nonzero","skipped","malformed","missing","cleanup","both","signal","in
     expect(saved.publication).toBe("COMPLETE");expect(saved.command.join(" ")).not.toContain("-private-");expect(saved.sha).toBe(sha);expect(saved.runId).toMatch(/^release-/);expect(saved.status).toBe(scenario==="success"?"PASS":"BLOCKED");
     expect(saved.rawReport).toBe(scenario==="raw-cleanup"?"RETAINED_PRIVATE":scenario==="inventory"||noRaw?"NOT_CREATED":"REMOVED");
     expect(saved.cleanup).toBe(scenario==="inventory"||noRaw?"SETUP NOT RETURNED; inspect ownership breadcrumbs":scenario==="cleanup"||scenario==="both"?"FAILED":"COMPLETED");expect(JSON.stringify(saved)).not.toContain("token=secret");
+    if (scenario === "missing") {
+      expect(saved).toMatchObject({ exit: 0, signal: null, collection: "FAILED", status: "BLOCKED" });
+    }
     if(scenario==="both")expect(saved.failures).toHaveLength(2);
   }finally{fault?.mockRestore();parentFault?.mockRestore();creation.mockRestore();log.mockRestore();errorLog.mockRestore();vi.unstubAllEnvs();
     if(scenario==="raw-cleanup"){const output=io.spawn.mock.calls.at(-1)?.[1].find((arg:string)=>arg.startsWith("--outputFile="))?.slice(13);if(output){const fs=await import("node:path");await rm(fs.dirname(output),{recursive:true,force:true});}}

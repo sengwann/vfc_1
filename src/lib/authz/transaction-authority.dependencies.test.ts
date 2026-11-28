@@ -9,7 +9,7 @@ afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); });
 it("imports real transactional authority without DATABASE_URL or global Prisma initialization", async () => {
   vi.resetModules();
   vi.stubEnv("DATABASE_URL", "");
-  const module = await import("./transaction-authority");
-  expect(module.authorizeFinancialTransaction).toBeTypeOf("function");
+  const authorityModule = await import("./transaction-authority");
+  expect(authorityModule.authorizeFinancialTransaction).toBeTypeOf("function");
   expect(boundary.initialized).not.toHaveBeenCalled();
 });

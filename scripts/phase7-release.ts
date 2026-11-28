@@ -32,9 +32,8 @@ export function checkMode(mode: string, env = process.env): asserts mode is Mode
   }
 }
 export function childEnvironment(mode: Mode, env: NodeJS.ProcessEnv, verified?: string): NodeJS.ProcessEnv {
-  const result: NodeJS.ProcessEnv = {};
+  const result: NodeJS.ProcessEnv = { NODE_ENV: "test" };
   for (const key of ["PATH", "HOME", "TMPDIR", "SYSTEMROOT", "SystemRoot", "LANG", "CI"]) if (env[key]) result[key] = env[key];
-  result.NODE_ENV = "test";
   if (mode === "units") return result;
   result.DATABASE_URL = "postgresql://disabled:disabled@127.0.0.1:1/disabled";
   if (!verified) throw new Error("Verified child connection required");

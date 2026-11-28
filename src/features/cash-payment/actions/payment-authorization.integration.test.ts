@@ -204,7 +204,7 @@ describe.skipIf(!enabled)("Phase 3F payment transactions", () => {
       expect(await voidPaymentAction(voidForm(first.id))).toEqual({ success: true });
       expect(await p.receipt.findUnique({ where: { id: originalReceipt.id } })).toMatchObject({ id: originalReceipt.id, receiptNumber: originalReceipt.receiptNumber, paymentId: first.id, status: "VOIDED" });
       const historicalPage = await ReceiptDetailPage({ params: { receiptId: originalReceipt.id } });
-      const html = renderToStaticMarkup(createElement(TranslationProvider, { language: "EN", children: historicalPage }));
+      const html = renderToStaticMarkup(createElement(TranslationProvider, { language: "EN" }, historicalPage));
       expect(html).toContain(originalReceipt.receiptNumber); expect(html).toContain("Incorrect payer recorded");
       expect(await voidPaymentAction(voidForm(first.id))).toMatchObject({ success: false, error: "Only accepted payments can be voided." });
       expect(await recordCashPaymentAction(form({ amount: "2000" }))).toEqual({ success: true });

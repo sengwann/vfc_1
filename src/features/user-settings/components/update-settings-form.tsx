@@ -86,13 +86,13 @@ export function UpdateSettingsForm({
           {t("settings.language")}
         </legend>
         <div className="grid gap-3 sm:grid-cols-2">
-          {LANGUAGE_OPTIONS.map((option) => (
+          {LANGUAGE_OPTIONS.map((option, index) => (
             <label
               className="flex min-h-14 cursor-pointer items-center gap-3 rounded-lg border border-input bg-card px-4 py-3 text-sm font-medium transition-colors hover:bg-muted has-[:checked]:border-primary has-[:checked]:bg-accent has-[:checked]:text-accent-foreground has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-ring"
               key={option.value}
             >
               <input
-                aria-invalid={languageError ? true : undefined}
+                data-form-error={languageError && index === 0 ? true : undefined}
                 className="peer sr-only"
                 defaultChecked={initialLanguage === option.value}
                 name="language"
