@@ -463,8 +463,8 @@ model PasswordRecoveryRequest {
   rejectedAt           DateTime?
   /// Optional short note for the member (at most 200 characters).
   rejectionNote        String?
-  /// WITHDRAWN (by an authority, with a note), TOO_MANY_ATTEMPTS or
-  /// TARGET_INELIGIBLE (both by the system, so revokedByUserId stays NULL).
+  /// WITHDRAWN (by an authority, with a note), or a system reason:
+  /// TOO_MANY_ATTEMPTS, TARGET_INELIGIBLE or PASSWORD_REPLACED.
   revocationReason     String?
   revokedByUserId      String?
   revokedBy            User?                  @relation("RecoveryRevoker", fields: [revokedByUserId], references: [id], onDelete: Restrict)

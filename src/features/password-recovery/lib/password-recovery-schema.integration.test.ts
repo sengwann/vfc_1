@@ -566,6 +566,26 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
         });
       });
 
+      it("accepts password replacement as a system revocation and preserves issue history", async () => {
+        const userId = await newUser("SYSTEM_ADMIN", null);
+        const pending = await insertRequest(userId, {
+          status: "REVOKED",
+          hours: { revokedAt: -1 },
+          values: { revocationReason: "PASSWORD_REPLACED" },
+        });
+        expect(pending).toBeTruthy();
+        const issued = await insertRequest(userId, {
+          status: "REVOKED",
+          hours: { codeIssuedAt: -2, codeExpiresAt: 1, revokedAt: -1 },
+          values: { revocationReason: "PASSWORD_REPLACED", codeIssuedByUserId: adminId, issueCount: 1 },
+        });
+        const { rows } = await db.pool.query(
+          'SELECT "codeHash", "codeIssuedByUserId", "issueCount" FROM "PasswordRecoveryRequest" WHERE id=$1',
+          [issued],
+        );
+        expect(rows).toEqual([{ codeHash: null, codeIssuedByUserId: adminId, issueCount: 1 }]);
+      });
+
       it("refuses an unknown or missing reason", async () => {
         expect(
           await constraintOf(

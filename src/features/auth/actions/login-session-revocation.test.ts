@@ -16,8 +16,9 @@ import { logoutAction } from "./logout.action";
 
 const mocks = vi.hoisted(() => {
   const tx = {
-    user: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
-    passwordRecoveryRequest: { findFirst: vi.fn(), updateMany: vi.fn() },
+    $queryRaw: vi.fn(),
+    user: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
+    passwordRecoveryRequest: { findFirst: vi.fn(), updateMany: vi.fn(), updateManyAndReturn: vi.fn() },
   };
   return {
     tx,
@@ -191,6 +192,14 @@ beforeEach(() => {
     ),
   );
   mocks.tx.user.findUnique.mockImplementation(async () => readAccount());
+  mocks.tx.$queryRaw.mockImplementation(async () => account ? [{ id: account.id }] : []);
+  mocks.tx.passwordRecoveryRequest.updateManyAndReturn.mockResolvedValue([]);
+  mocks.tx.user.updateMany.mockImplementation(async ({ where, data }) => {
+    if (!account || account.id !== where.id || account.sessionVersion !== where.sessionVersion ||
+      account.passwordHash !== where.passwordHash) return { count: 0 };
+    await mocks.tx.user.update({ where, data });
+    return { count: 1 };
+  });
   mocks.tx.user.update.mockImplementation(async ({ where, data }) => {
     if (!account || account.id !== where.id) throw new Error("Account missing");
     account = {

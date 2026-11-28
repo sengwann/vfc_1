@@ -108,7 +108,7 @@ export interface RecoveryAuditMetadata {
   codeExpiresAt?: string;
   rejectedAt?: string;
   completedAt?: string;
-  revocationReason?: string;
+  revocationReason?: "WITHDRAWN" | "TOO_MANY_ATTEMPTS" | "TARGET_INELIGIBLE" | "PASSWORD_REPLACED";
   failedAttempts?: number;
   outcome?: "SUCCESS" | "BLOCKED";
   blockReason?: string;

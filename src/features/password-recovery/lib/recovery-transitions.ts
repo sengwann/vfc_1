@@ -42,6 +42,7 @@ import {
   verifyRecoveryCode,
 } from "./recovery-code";
 import type { RecoveryRequestInput } from "./recovery-input";
+import { lockRecoveryTarget } from "./recovery-credential-lock";
 import { syncRecoveryNotifications } from "./recovery-notifications";
 import {
   computeCodeExpiresAt,
@@ -243,10 +244,18 @@ async function loadAuthorizedRequest(
     actionType: AuditActionType;
   },
 ): Promise<{ request: RequestRow; target: TargetFacts } | null> {
-  const request = (await tx.passwordRecoveryRequest.findUnique({
+  // Resolve only the immutable target ID before taking its lock. Evaluate
+  // status and other request state only after the target lock is held.
+  const locator = await tx.passwordRecoveryRequest.findUnique({
     where: { id: input.requestId },
+    select: { userId: true },
+  });
+  if (!locator || !(await lockRecoveryTarget(tx, locator.userId))) return null;
+
+  const request = await tx.passwordRecoveryRequest.findUnique({
+    where: { id: input.requestId, userId: locator.userId },
     select: REQUEST_SELECT,
-  })) as RequestRow | null;
+  });
 
   if (!request) {
     return null;
@@ -385,7 +394,7 @@ export async function fileRecoveryRequestInTx(
 ): Promise<FileRequestOutcome> {
   const account = await findRecoveryAccount(tx, params);
 
-  if (!account) {
+  if (!account || !(await lockRecoveryTarget(tx, account.id))) {
     return { kind: "ignored" };
   }
 
@@ -855,7 +864,7 @@ export async function redeemRecoveryCodeInTx(
 
   const account = await findRecoveryAccount(tx, params);
 
-  const request = account
+  const request = account && (await lockRecoveryTarget(tx, account.id))
     ? ((await tx.passwordRecoveryRequest.findFirst({
         where: { userId: account.id, status: { in: ACTIVE_STATUSES } },
         select: REQUEST_SELECT,

@@ -205,6 +205,9 @@ export function formatMetadataValue(
     if (ENUM_METADATA_KEYS.has(key)) {
       return ENUM_VALUE_KEYS[value] ? t(ENUM_VALUE_KEYS[value]) : value;
     }
+    if (key === "revocationReason" && value === "PASSWORD_REPLACED") {
+      return "Password replaced";
+    }
     // Recovery events and revocation reasons are stored as CODE_ISSUED,
     // TOO_MANY_ATTEMPTS and so on: show them as readable words.
     if (key === "event" || key === "revocationReason") {

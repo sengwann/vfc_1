@@ -18,8 +18,8 @@
  * It only touches System Admin accounts (role SYSTEM_ADMIN, no village).
  * Without --yes it changes nothing and says what it would do.
  *
- * Like prisma/seed.ts this file builds its own Prisma client and imports
- * nothing from src/, so it carries no server-only code.
+ * Like prisma/seed.ts this file builds its own Prisma client and shares a
+ * transaction helper that does not depend on a Next.js request context.
  */
 import "dotenv/config";
 
@@ -29,6 +29,11 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { Pool } from "pg";
+import type { RecoveryAuditMetadata } from "../src/lib/audit/audit.types";
+import {
+  PASSWORD_REPLACED_REASON,
+  revokeRecoveryAfterPasswordReplacement,
+} from "../src/features/password-recovery/lib/recovery-credential-lock";
 
 // No look-alike characters (0/O, 1/I/L), so it can be read from a terminal.
 const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
@@ -78,8 +83,9 @@ async function main(): Promise<void> {
   const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
 
   try {
+    const adminScope = { email, role: "SYSTEM_ADMIN", villageId: null } as const;
     const admin = await prisma.user.findFirst({
-      where: { email, role: "SYSTEM_ADMIN", villageId: null },
+      where: adminScope,
       select: { id: true, name: true },
     });
 
@@ -103,7 +109,7 @@ async function main(): Promise<void> {
 
     await prisma.$transaction(async (tx) => {
       await tx.user.update({
-        where: { id: admin.id },
+        where: { id: admin.id, ...adminScope },
         data: {
           passwordHash,
           mustChangePassword: true,
@@ -111,29 +117,13 @@ async function main(): Promise<void> {
         },
       });
 
-      // An open recovery request for this account is now pointless.
-      const open = await tx.passwordRecoveryRequest.findFirst({
-        where: { userId: admin.id, status: { in: ["PENDING", "CODE_ISSUED"] } },
-        select: { id: true, status: true },
-      });
-
-      if (open) {
-        await tx.passwordRecoveryRequest.update({
-          where: { id: open.id },
-          data: {
-            status: "REVOKED",
-            revokedAt: new Date(),
-            revocationReason: "TARGET_INELIGIBLE",
-            codeHash: null,
-          },
-        });
-      }
+      const revokedId = await revokeRecoveryAfterPasswordReplacement(tx, admin.id);
 
       await tx.auditLog.create({
         data: {
           actionType: "COMPLETE",
           entityType: "PASSWORD_RECOVERY_REQUEST",
-          entityId: open?.id ?? null,
+          entityId: revokedId,
           villageId: null,
           actorUserId: null,
           metadata: {
@@ -141,10 +131,11 @@ async function main(): Promise<void> {
             targetUserId: admin.id,
             via: "cli",
             outcome: "SUCCESS",
-          },
+            ...(revokedId ? { revocationReason: PASSWORD_REPLACED_REASON } : {}),
+          } satisfies RecoveryAuditMetadata,
         },
       });
-    });
+    }, { isolationLevel: "ReadCommitted" });
 
     console.log(`Password reset for System Admin "${admin.name}".`);
     console.log("Temporary password (shown once, copy it now):");

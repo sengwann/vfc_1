@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
-  const tx = { user: { update: vi.fn() } };
+  const tx = {
+    user: { updateMany: vi.fn() },
+    passwordRecoveryRequest: { updateManyAndReturn: vi.fn() },
+  };
   return {
     tx,
     findUnique: vi.fn(),
@@ -10,6 +13,7 @@ const mocks = vi.hoisted(() => {
     ),
     requireSessionUser: vi.fn(),
     destroySession: vi.fn(),
+    getSessionIdentity: vi.fn(),
     verifyPassword: vi.fn(),
     hashPassword: vi.fn(),
     createAuditLog: vi.fn(),
@@ -24,7 +28,7 @@ vi.mock("@/lib/prisma", () => ({
 }));
 vi.mock("@/lib/auth/session", () => ({
   destroySession: mocks.destroySession,
-  revokeUserSessions: vi.fn(),
+  getSessionIdentity: mocks.getSessionIdentity,
 }));
 vi.mock("@/lib/auth/guards", () => ({
   requireSessionUser: mocks.requireSessionUser,
@@ -55,10 +59,24 @@ beforeEach(() => {
     villageId: "v1",
     mustChangePassword: true,
   });
-  mocks.findUnique.mockResolvedValue({ id: "u1", passwordHash: "old-hash" });
+  mocks.getSessionIdentity.mockResolvedValue({ userId: "u1", sessionVersion: 3 });
+  mocks.findUnique.mockResolvedValue({ passwordHash: "old-hash", sessionVersion: 3 });
+  mocks.tx.user.updateMany.mockResolvedValue({ count: 1 });
+  mocks.tx.passwordRecoveryRequest.updateManyAndReturn.mockResolvedValue([]);
   mocks.verifyPassword.mockResolvedValue(true);
   mocks.hashPassword.mockResolvedValue("new-hash");
 });
+
+const genericFailure = {
+  success: false,
+  formError: "Unable to change password. Please try again.",
+};
+
+function expectNoSuccessEffects() {
+  expect(mocks.tx.passwordRecoveryRequest.updateManyAndReturn).not.toHaveBeenCalled();
+  expect(mocks.createAuditLog).not.toHaveBeenCalled();
+  expect(mocks.destroySession).not.toHaveBeenCalled();
+}
 
 describe("changePasswordAction", () => {
   it("clears the flag, bumps the session version, audits and ends the session", async () => {
@@ -67,13 +85,18 @@ describe("changePasswordAction", () => {
     );
 
     expect(result).toEqual({ success: true });
-    expect(mocks.tx.user.update).toHaveBeenCalledWith({
-      where: { id: "u1" },
+    expect(mocks.tx.user.updateMany).toHaveBeenCalledWith({
+      where: { id: "u1", sessionVersion: 3, passwordHash: "old-hash" },
       data: {
         passwordHash: "new-hash",
         mustChangePassword: false,
         sessionVersion: { increment: 1 },
       },
+    });
+    expect(mocks.tx.passwordRecoveryRequest.updateManyAndReturn).toHaveBeenCalledWith({
+      where: { userId: "u1", status: { in: ["PENDING", "CODE_ISSUED"] } },
+      data: { status: "REVOKED", revokedAt: expect.any(Date), revocationReason: "PASSWORD_REPLACED", codeHash: null },
+      select: { id: true },
     });
     expect(mocks.createAuditLog).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(mocks.createAuditLog.mock.calls[0][1])).not.toContain(
@@ -83,7 +106,8 @@ describe("changePasswordAction", () => {
   });
 
   it("works for a user who is blocked by the gate (uses the exempt guard)", async () => {
-    await changePasswordAction(form("initial-pass", "brand-new-pass"));
+    await expect(changePasswordAction(form("initial-pass", "brand-new-pass")))
+      .resolves.toEqual({ success: true });
     expect(mocks.requireSessionUser).toHaveBeenCalledTimes(1);
   });
 
@@ -120,6 +144,43 @@ describe("changePasswordAction", () => {
       fieldErrors: { newPassword: expect.stringContaining("72 bytes") },
     });
     expect(mocks.hashPassword).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { userId: "different-user", sessionVersion: 3 }])(
+    "refuses a missing or mismatched signed identity",
+    async (identity) => {
+      mocks.getSessionIdentity.mockResolvedValue(identity);
+      await expect(changePasswordAction(form("initial-pass", "brand-new-pass")))
+        .resolves.toEqual(genericFailure);
+      expect(mocks.findUnique).not.toHaveBeenCalled();
+      expectNoSuccessEffects();
+    },
+  );
+
+  it.each([null, { passwordHash: "old-hash", sessionVersion: 4 }])(
+    "refuses a missing account or a logout between the guard and credential read",
+    async (credential) => {
+      mocks.findUnique.mockResolvedValue(credential);
+      await expect(changePasswordAction(form("initial-pass", "brand-new-pass")))
+        .resolves.toEqual(genericFailure);
+      expect(mocks.verifyPassword).not.toHaveBeenCalled();
+      expectNoSuccessEffects();
+    },
+  );
+
+  it("requires exactly one matching update before invalidation or audit", async () => {
+    mocks.tx.user.updateMany.mockResolvedValue({ count: 0 });
+    await expect(changePasswordAction(form("initial-pass", "brand-new-pass")))
+      .resolves.toEqual(genericFailure);
+    expectNoSuccessEffects();
+  });
+
+  it("keeps the cookie and never audits success when request invalidation fails", async () => {
+    mocks.tx.passwordRecoveryRequest.updateManyAndReturn.mockRejectedValueOnce(new Error("db"));
+    await expect(changePasswordAction(form("initial-pass", "brand-new-pass")))
+      .resolves.toEqual(genericFailure);
+    expect(mocks.createAuditLog).not.toHaveBeenCalled();
+    expect(mocks.destroySession).not.toHaveBeenCalled();
   });
 
   it("keeps the session if the transaction fails", async () => {

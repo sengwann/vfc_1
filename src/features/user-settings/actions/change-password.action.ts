@@ -1,7 +1,8 @@
 "use server";
 import { AuditActionType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { destroySession, revokeUserSessions } from "@/lib/auth/session";
+import { destroySession, getSessionIdentity } from "@/lib/auth/session";
+import { revokeRecoveryAfterPasswordReplacement } from "@/features/password-recovery/lib/recovery-credential-lock";
 import { requireSessionUser } from "@/lib/auth/guards";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { AuditEntityType, createAuditLog } from "@/lib/audit";
@@ -33,18 +34,19 @@ export async function changePasswordAction(
     };
   }
 
+  const failed: ChangePasswordActionResult = {
+    success: false,
+    formError: "Unable to change password. Please try again.",
+  };
+  const identity = await getSessionIdentity();
+  if (!identity || identity.userId !== user.id) return failed;
+
   const { currentPassword, newPassword } = validation.data;
   const dbUser = await prisma.user.findUnique({
     where: { id: user.id },
-    select: { id: true, passwordHash: true },
+    select: { passwordHash: true, sessionVersion: true },
   });
-
-  if (!dbUser) {
-    return {
-      success: false,
-      formError: "Unable to verify account. Please try again.",
-    };
-  }
+  if (!dbUser || dbUser.sessionVersion !== identity.sessionVersion) return failed;
 
   if (!(await verifyPassword(currentPassword, dbUser.passwordHash))) {
     return {
@@ -58,9 +60,13 @@ export async function changePasswordAction(
   const newPasswordHash = await hashPassword(newPassword);
 
   try {
-    await prisma.$transaction(async (tx) => {
-      await tx.user.update({
-        where: { id: user.id },
+    const changed = await prisma.$transaction(async (tx) => {
+      const updated = await tx.user.updateMany({
+        where: {
+          id: identity.userId,
+          sessionVersion: identity.sessionVersion,
+          passwordHash: dbUser.passwordHash,
+        },
         data: {
           passwordHash: newPasswordHash,
           mustChangePassword: false,
@@ -68,6 +74,9 @@ export async function changePasswordAction(
         },
       });
 
+      if (updated.count !== 1) return false;
+
+      await revokeRecoveryAfterPasswordReplacement(tx, user.id);
       await createAuditLog(tx, {
         actionType: AuditActionType.UPDATE,
         entityType: AuditEntityType.USER,
@@ -76,12 +85,11 @@ export async function changePasswordAction(
         actorUserId: user.id,
         metadata: { note: "password_changed" },
       });
-    });
+      return true;
+    }, { isolationLevel: "ReadCommitted" });
+    if (!changed) return failed;
   } catch {
-    return {
-      success: false,
-      formError: "Unable to change password. Please try again.",
-    };
+    return failed;
   }
 
   await destroySession();

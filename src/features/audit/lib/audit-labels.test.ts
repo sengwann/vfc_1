@@ -77,6 +77,14 @@ describe("deactivation audit labels", () => {
     expect(formatMetadataValue(t, "codeExpiresAt", "2026-11-04T12:00:00.000Z")).toContain("06:30");
   });
 
+  it.each([
+    ["PASSWORD_REPLACED", "Password replaced"],
+    ["TARGET_INELIGIBLE", "Target ineligible"],
+    ["WITHDRAWN", "Withdrawn"],
+  ])("renders %s as %s", (reason, label) => {
+    expect(formatMetadataValue(t, "revocationReason", reason)).toBe(label);
+  });
+
   it("leaves an unparsable timestamp and unknown values as they are", () => {
     expect(formatMetadataValue(t, "approvedAt", "not a date")).toBe("not a date");
     expect(formatMetadataValue(t, "outcome", "OTHER")).toBe("OTHER");

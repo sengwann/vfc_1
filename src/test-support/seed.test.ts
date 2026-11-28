@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   findFirst: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
+  invalidate: vi.fn(),
   hash: vi.fn(),
   openPool: vi.fn(),
   endPool: vi.fn(),
@@ -26,6 +27,13 @@ vi.mock("@prisma/client", () => ({
   UserRole: { SYSTEM_ADMIN: "SYSTEM_ADMIN" },
   PrismaClient: class {
     user = { findFirst: mocks.findFirst, create: mocks.create, update: mocks.update };
+    $transaction = (operation: (tx: {
+      user: { update: typeof mocks.update };
+      passwordRecoveryRequest: { updateManyAndReturn: typeof mocks.invalidate };
+    }) => Promise<void>) => operation({
+      user: { update: mocks.update },
+      passwordRecoveryRequest: { updateManyAndReturn: mocks.invalidate },
+    });
     $disconnect = mocks.disconnect;
   },
 }));
@@ -54,6 +62,7 @@ beforeEach(() => {
   vi.stubEnv("SEED_ALLOW_PRODUCTION", undefined);
   mocks.findFirst.mockResolvedValue({ id: "admin-1" });
   mocks.hash.mockResolvedValue(fixtureHash);
+  mocks.invalidate.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -75,6 +84,7 @@ describe("SYSTEM_ADMIN seed credentials", () => {
     });
     expect(mocks.hash).not.toHaveBeenCalled();
     expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.invalidate).not.toHaveBeenCalled();
     expect(mocks.create).not.toHaveBeenCalled();
   });
 
@@ -146,6 +156,12 @@ describe("SYSTEM_ADMIN seed credentials", () => {
       where: { id: "admin-1", ...adminScope },
       data: { passwordHash: fixtureHash, sessionVersion: { increment: 1 } },
     });
+    expect(mocks.invalidate).toHaveBeenCalledExactlyOnceWith({
+      where: { userId: "admin-1", status: { in: ["PENDING", "CODE_ISSUED"] } },
+      data: { status: "REVOKED", revokedAt: expect.any(Date), revocationReason: "PASSWORD_REPLACED", codeHash: null },
+      select: { id: true },
+    });
+    expect(mocks.update).toHaveBeenCalledBefore(mocks.invalidate);
     expect(mocks.create).not.toHaveBeenCalled();
     expect(console.log).toHaveBeenCalledExactlyOnceWith("System administrator seed completed.");
     expect(console.error).not.toHaveBeenCalled();

@@ -8,6 +8,7 @@ import "dotenv/config";
 
 import { normalizeEmail } from "../src/lib/auth/identifiers";
 import { checkPasswordRules } from "../src/lib/auth/password-rules";
+import { revokeRecoveryAfterPasswordReplacement } from "../src/features/password-recovery/lib/recovery-credential-lock";
 
 class SeedConfigurationError extends Error {}
 
@@ -73,10 +74,13 @@ async function seedSystemAdmin(): Promise<void> {
       const passwordHash = await bcrypt.hash(password, 10);
 
       if (existingAdmin) {
-        await prisma.user.update({
-          where: { id: existingAdmin.id, ...adminScope },
-          data: { passwordHash, sessionVersion: { increment: 1 } },
-        });
+        await prisma.$transaction(async (tx) => {
+          await tx.user.update({
+            where: { id: existingAdmin.id, ...adminScope },
+            data: { passwordHash, sessionVersion: { increment: 1 } },
+          });
+          await revokeRecoveryAfterPasswordReplacement(tx, existingAdmin.id);
+        }, { isolationLevel: "ReadCommitted" });
       } else {
         await prisma.user.create({
           data: { ...adminScope, name: "System Admin", passwordHash },
