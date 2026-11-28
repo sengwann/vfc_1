@@ -17,7 +17,7 @@ import { logoutAction } from "./logout.action";
 const mocks = vi.hoisted(() => {
   const tx = {
     $queryRaw: vi.fn(),
-    user: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
+    user: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn(), updateManyAndReturn: vi.fn() },
     passwordRecoveryRequest: { findFirst: vi.fn(), updateMany: vi.fn(), updateManyAndReturn: vi.fn() },
   };
   return {
@@ -194,6 +194,12 @@ beforeEach(() => {
   mocks.tx.user.findUnique.mockImplementation(async () => readAccount());
   mocks.tx.$queryRaw.mockImplementation(async () => account ? [{ id: account.id }] : []);
   mocks.tx.passwordRecoveryRequest.updateManyAndReturn.mockResolvedValue([]);
+  mocks.tx.user.updateManyAndReturn.mockImplementation(async ({ where, data }) => {
+    if (!account || account.id !== where.id || account.sessionVersion !== where.sessionVersion) {
+      return [];
+    }
+    return [await mocks.tx.user.update({ where, data })];
+  });
   mocks.tx.user.updateMany.mockImplementation(async ({ where, data }) => {
     if (!account || account.id !== where.id || account.sessionVersion !== where.sessionVersion ||
       account.passwordHash !== where.passwordHash) return { count: 0 };

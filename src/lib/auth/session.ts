@@ -67,6 +67,17 @@ export async function revokeUserSessions(userId: string): Promise<void> {
   });
 }
 
+/** Revoke the signed session generation and return its account's audit attribution. */
+export async function revokeMatchingSession(userId: string, sessionVersion: number) {
+  const users = await prisma.user.updateManyAndReturn({
+    where: { id: userId, sessionVersion },
+    data: { sessionVersion: { increment: 1 } },
+    select: { id: true, role: true, villageId: true },
+  });
+
+  return users.length === 1 ? users[0] : null;
+}
+
 export async function destroySession(): Promise<void> {
   const cookieStore = await cookies();
   cookieStore.set(AUTH_COOKIE_NAME, "", {

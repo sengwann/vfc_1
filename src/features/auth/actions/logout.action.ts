@@ -4,8 +4,8 @@ import { redirect } from "next/navigation";
 import { AuditActionType } from "@prisma/client";
 import {
   destroySession,
-  getCurrentUser,
-  revokeUserSessions,
+  getSessionIdentity,
+  revokeMatchingSession,
 } from "../../../lib/auth/session";
 import { LOGIN_ROUTE } from "../../../lib/auth/auth.constants";
 import { prisma } from "../../../lib/prisma";
@@ -13,10 +13,13 @@ import { AuditEntityType, tryCreateAuditLog } from "../../../lib/audit";
 
 export async function logoutAction(): Promise<void> {
   try {
-    const user = await getCurrentUser();
+    const identity = await getSessionIdentity();
+    // A suspended village blocks access, but its signed sessions can still be revoked.
+    const user = identity
+      ? await revokeMatchingSession(identity.userId, identity.sessionVersion)
+      : null;
 
     if (user) {
-      await revokeUserSessions(user.id);
       await tryCreateAuditLog(prisma, {
         actionType: AuditActionType.LOGOUT,
         entityType: AuditEntityType.SESSION,
