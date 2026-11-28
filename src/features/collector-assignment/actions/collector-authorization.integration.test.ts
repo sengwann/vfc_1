@@ -1,13 +1,22 @@
-/** Authored only: opt-in disposable PostgreSQL, never a production database.
+/** Opt-in disposable PostgreSQL, never a production database.
  * Actual actions, authorization, locks, retries and audits. Only preflight
  * identity/navigation/global-client boundaries and explicit clock cases below
  * are substituted. Payment fixture uses Phase 3B authority, not legacy actions.
+ * For local runs, set VFC_RUN_COLLECTOR_LOCAL_TESTS=1 and use a disposable
+ * TEST_DATABASE_URL with permission to create fresh databases.
  */
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PrismaClient, type Prisma } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { Client } from "pg";
 import { describe, expect, it, vi } from "vitest";
-import { disposable, migration } from "@/features/fund-management/lib/fund-migration-test-support";
 import { activate } from "@/features/fund-management/lib/fund-schema-test-support";
+import { withReleaseDatabase } from "@/test-support/phase7-release-sandbox";
+import { requireTestDatabaseTarget } from "@/test-support/test-database";
 import { getSessionIdentity } from "@/lib/auth/session-identity";
 import { getCurrentPeriod } from "@/lib/authz/collector-period";
 import { authorizeFinancialTransaction } from "@/lib/authz/transaction-authority";
@@ -56,6 +65,147 @@ function clockClient(tx: Prisma.TransactionClient): Prisma.TransactionClient {
   } });
 }
 const enabled = Boolean(process.env.TEST_DATABASE_URL) && process.env.VFC_ALLOW_MIGRATION_TESTS === "1";
+const migrationRoot = join(process.cwd(), "prisma/migrations");
+const collectorMigration = "20261128130000_one_active_collector_per_village_period";
+const activeIndex = "CollectorAssignment_one_active_per_village_period";
+const historicalIndex = "CollectorAssignment_villageId_userId_year_month_key";
+const fixtureCollision = "Village 'v', year 2026, month 11: active assignment IDs {first,second}";
+const rollbackDiagnostic = "Assignment rows were not modified. The new index was not created.";
+const readMigration = (name: string) => readFile(join(migrationRoot, name, "migration.sql"), "utf8");
+
+async function withDisposableDatabase(run: (raw: Client, url: string) => Promise<void>) {
+  if (process.env.VFC_RUN_COLLECTOR_LOCAL_TESTS !== "1") {
+    return withReleaseDatabase("fresh", run);
+  }
+
+  const { url, database } = requireTestDatabaseTarget({
+    ...process.env,
+    TEST_DATABASE_ALLOW_REMOTE: undefined,
+  });
+  const admin = new Client({ connectionString: url });
+  await admin.connect();
+  try {
+    const { rows: [identity] } = await admin.query<{ name: string }>("SELECT current_database() AS name");
+    if (identity.name !== database) throw new Error("Collector test database identity mismatch");
+
+    const childName = `vfc_test_collector_${randomUUID().replaceAll("-", "")}`;
+    const childUrl = new URL(url);
+    childUrl.pathname = `/${childName}`;
+    const raw = new Client({ connectionString: childUrl.toString() });
+    await admin.query(`CREATE DATABASE "${childName}" TEMPLATE template0`);
+    try {
+      await raw.connect();
+      const { rows: [child] } = await raw.query<{ name: string }>("SELECT current_database() AS name");
+      if (child.name !== childName) throw new Error("Collector test child database identity mismatch");
+      await run(raw, childUrl.toString());
+    } finally {
+      try {
+        await raw.end();
+      } finally {
+        await admin.query(`DROP DATABASE "${childName}"`);
+      }
+    }
+  } finally {
+    await admin.end();
+  }
+}
+
+async function applyMigrations(raw: Client, beforeCollectorIndex: boolean) {
+  const names = (await readdir(migrationRoot)).filter((name) => /^\d/.test(name)).sort();
+  for (const name of names) {
+    if (beforeCollectorIndex && name >= collectorMigration) break;
+    await raw.query(await readMigration(name));
+  }
+}
+
+async function indexDefinition(raw: Client, name = activeIndex) {
+  const { rows } = await raw.query<{ indexdef: string }>(
+    "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = $1",
+    [name],
+  );
+  return rows[0]?.indexdef;
+}
+
+function migrationCommand(url: string, command: "npm" | "npx", args: string[]) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    timeout: 30_000,
+    env: {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      TMPDIR: process.env.TMPDIR,
+      NODE_ENV: "test",
+      DATABASE_URL: url,
+    },
+  });
+  if (result.error || result.status === null) {
+    throw new Error(`Migration fixture command did not exit normally: ${command} ${args[0]}`);
+  }
+  const output = (result.stdout + result.stderr).replace(/postgres(?:ql)?:\/\/\S+/gi, "[redacted database URL]");
+  return { status: result.status, output };
+}
+
+async function deployBaseline(url: string) {
+  const directory = await mkdtemp(join(tmpdir(), "vfc-collector-baseline-"));
+  try {
+    const migrations = join(directory, "prisma", "migrations");
+    await mkdir(migrations, { recursive: true });
+    await symlink(join(process.cwd(), "node_modules"), join(directory, "node_modules"), "junction");
+    await cp("prisma.config.ts", join(directory, "prisma.config.ts"));
+    await cp("prisma/schema.prisma", join(directory, "prisma/schema.prisma"));
+    for (const name of await readdir(migrationRoot)) {
+      if (name === "migration_lock.toml" || (/^\d/.test(name) && name < collectorMigration)) {
+        await cp(join(migrationRoot, name), join(migrations, name), { recursive: true });
+      }
+    }
+    const baseline = migrationCommand(url, "npm", ["run", "db:deploy", "--", "--config", join(directory, "prisma.config.ts")]);
+    expect(baseline.status, baseline.output).toBe(0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+async function collectorMigrationHistory(raw: Client) {
+  return (await raw.query<{
+    finished: boolean;
+    rolledBack: boolean;
+    appliedSteps: number;
+    logs: string | null;
+  }>(`
+    SELECT finished_at IS NOT NULL AS finished, rolled_back_at IS NOT NULL AS "rolledBack",
+           applied_steps_count AS "appliedSteps", logs
+    FROM public."_prisma_migrations"
+    WHERE migration_name = $1
+    ORDER BY started_at
+  `, [collectorMigration])).rows;
+}
+
+async function insertAssignment(
+  raw: Client, id: string, userId: string,
+  { villageId = "v", year = 2026, month = 11, isActive = true } = {},
+) {
+  await raw.query(
+    `INSERT INTO "CollectorAssignment"(id,"villageId","userId",year,month,"isActive","updatedAt")
+     VALUES ($1,$2,$3,$4,$5,$6,now())`,
+    [id, villageId, userId, year, month, isActive],
+  );
+}
+
+async function persistedAssignments(raw: Client) {
+  return (await raw.query('SELECT * FROM "CollectorAssignment" ORDER BY id')).rows;
+}
+
+async function seedCollectorMembers(raw: Client) {
+  await raw.query(`INSERT INTO "Village"(id,"villageCode",name,"updatedAt") VALUES ('v','v','Test',now())`);
+  await raw.query(`INSERT INTO "House"(id,"villageId","houseNumber","updatedAt") VALUES ('v','v','H1',now())`);
+  await raw.query(`INSERT INTO "User"(id,"villageId","houseId",role,"membershipStatus",name,"passwordHash","updatedAt") VALUES
+    ('chief','v',NULL,'CHIEF','ACTIVE','Chief','unused',now()),
+    ('head','v','v','VILLAGER','ACTIVE','Head','unused',now()),
+    ('collector','v','v','VILLAGER','ACTIVE','Collector','unused',now()),
+    ('alternate','v','v','VILLAGER','ACTIVE','Alternate','unused',now())`);
+  await raw.query(`UPDATE "House" SET "headOfHouseId"='head' WHERE id='v'`);
+}
+
 function barrier() { let open!: () => void; const reached = new Promise<void>((resolve) => { open = resolve; }); return { open, reached }; }
 function observe<T>(promise: Promise<T>) { return promise.then((value) => ({ value }), (error: unknown) => ({ error })); }
 async function reached<T>(gate: ReturnType<typeof barrier>, pending: ReturnType<typeof observe<T>>) {
@@ -65,20 +215,16 @@ function identity(id = "chief") { vi.mocked(getSessionIdentity).mockResolvedValu
 function form(userId = "collector", period = getCurrentPeriod()) {
   const data = new FormData(); data.set("userId", userId); data.set("year", String(period.year)); data.set("month", String(period.month)); return data;
 }
-function deactivate() { const data = new FormData(); data.set("assignmentId", "assignment"); return deactivateCollectorAssignmentAction(data); }
-async function deactivated() { await expect(deactivate()).rejects.toMatchObject({ path: "/village/collectors" }); }
+function deactivate(id = "assignment") { const data = new FormData(); data.set("assignmentId", id); return deactivateCollectorAssignmentAction(data); }
+async function deactivated(id?: string) { await expect(deactivate(id)).rejects.toMatchObject({ path: "/village/collectors" }); }
 const transaction = <T>(p: PrismaClient, body: (tx: Prisma.TransactionClient) => Promise<T>) => withSerializableRetry(() => p.$transaction(body, { isolationLevel: "Serializable", timeout: 15000 }));
-async function fixture(run: (p: PrismaClient, other: PrismaClient, raw: import("pg").Client) => Promise<void>) {
-  await disposable(async (raw, url) => {
-    await raw.query(await migration());
-    await raw.query(`INSERT INTO "Village"(id,"villageCode",name,"updatedAt") VALUES ('v','v','Test',now())`);
-    await raw.query(`INSERT INTO "House"(id,"villageId","houseNumber","updatedAt") VALUES ('v','v','H1',now())`);
-    await raw.query(`INSERT INTO "User"(id,"villageId","houseId",role,"membershipStatus",name,"passwordHash","updatedAt") VALUES
-      ('chief','v',NULL,'CHIEF','ACTIVE','Chief','unused',now()),
-      ('head','v','v','VILLAGER','ACTIVE','Head','unused',now()),
-      ('collector','v','v','VILLAGER','ACTIVE','Collector','unused',now()),
-      ('alternate','v','v','VILLAGER','ACTIVE','Alternate','unused',now())`);
-    await raw.query(`UPDATE "House" SET "headOfHouseId"='head' WHERE id='v'`);
+async function fixture(
+  run: (p: PrismaClient, other: PrismaClient, raw: Client) => Promise<void>,
+  { beforeCollectorIndex = false } = {},
+) {
+  await withDisposableDatabase(async (raw, url) => {
+    await applyMigrations(raw, beforeCollectorIndex);
+    await seedCollectorMembers(raw);
     const p = new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
     const other = new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
     boundary.client = p; boundary.before = null; boundary.after = null; boundary.clock = null; identity();
@@ -103,6 +249,145 @@ async function payment(tx: Prisma.TransactionClient) {
   await createFinancialAudit(tx, { event: "RECEIPT_CREATED", villageId: "v", fundId: "v", actorUserId: "collector", metadata: { paymentId: "payment", receiptId: "receipt", receiptNumber: "TEST-RECEIPT" } });
 }
 describe.skipIf(!enabled)("Phase 3E collector transactions", () => {
+  it("enforces the exact partial index on a fresh schema for inserts and reactivations", async () => {
+    await fixture(async (_p, _other, raw) => {
+      expect(await indexDefinition(raw)).toBe(
+        'CREATE UNIQUE INDEX "CollectorAssignment_one_active_per_village_period" ON public."CollectorAssignment" USING btree ("villageId", year, month) WHERE ("isActive" = true)',
+      );
+
+      await insertAssignment(raw, "original", "collector");
+      const original = await persistedAssignments(raw);
+      await expect(insertAssignment(raw, "conflict", "alternate"))
+        .rejects.toMatchObject({ code: "23505", constraint: activeIndex });
+      expect(await persistedAssignments(raw)).toEqual(original);
+
+      await insertAssignment(raw, "inactive", "alternate", { isActive: false });
+      await insertAssignment(raw, "inactive-head", "head", { isActive: false });
+      await insertAssignment(raw, "other-month", "alternate", { month: 12 });
+      await insertAssignment(raw, "other-year", "collector", { year: 2027 });
+      await raw.query(`INSERT INTO "Village"(id,"villageCode",name,"updatedAt") VALUES ('other','other','Other',now())`);
+      await raw.query(`INSERT INTO "House"(id,"villageId","houseNumber","updatedAt") VALUES ('other','other','H1',now())`);
+      await raw.query(`INSERT INTO "User"(id,"villageId","houseId",role,"membershipStatus",name,"passwordHash","updatedAt")
+        VALUES ('other-collector','other','other','VILLAGER','ACTIVE','Other Collector','unused',now())`);
+      await raw.query(`UPDATE "House" SET "headOfHouseId"='other-collector' WHERE id='other'`);
+      await insertAssignment(raw, "other-village", "other-collector", { villageId: "other" });
+
+      const withHistory = await persistedAssignments(raw);
+      await expect(raw.query('UPDATE "CollectorAssignment" SET "isActive"=true WHERE id=$1', ["inactive"]))
+        .rejects.toMatchObject({ code: "23505", constraint: activeIndex });
+      await expect(insertAssignment(raw, "duplicate-history", "alternate", { isActive: false }))
+        .rejects.toMatchObject({ code: "23505", constraint: historicalIndex });
+      expect(await persistedAssignments(raw)).toEqual(withHistory);
+      expect(withHistory).toHaveLength(6);
+    });
+  }, 60000);
+
+  it("upgrades the previous migration chain without altering assignment history", async () => {
+    await fixture(async (_p, _other, raw) => {
+      expect(await indexDefinition(raw)).toBeUndefined();
+      await insertAssignment(raw, "current", "collector");
+      await insertAssignment(raw, "former", "alternate", { isActive: false });
+      await insertAssignment(raw, "past", "collector", { month: 10 });
+      const before = await persistedAssignments(raw);
+
+      await raw.query(await readMigration(collectorMigration));
+
+      expect(await indexDefinition(raw)).toContain('WHERE ("isActive" = true)');
+      expect(await persistedAssignments(raw)).toEqual(before);
+      await expect(insertAssignment(raw, "conflict", "head"))
+        .rejects.toMatchObject({ code: "23505", constraint: activeIndex });
+    }, { beforeCollectorIndex: true });
+  }, 60000);
+
+  it("refuses a deliberately colliding migration fixture and preserves both rows", async () => {
+    await fixture(async (_p, _other, raw) => {
+      await insertAssignment(raw, "first", "collector");
+      await insertAssignment(raw, "second", "alternate");
+      const before = await persistedAssignments(raw);
+      await expect(raw.query(await readMigration(collectorMigration))).rejects.toMatchObject({
+        code: "23505",
+        message: "Cannot enforce one active Collector assignment per village and period. "
+          + `Migration ${collectorMigration}. ${fixtureCollision}. ${rollbackDiagnostic}`,
+        detail: fixtureCollision,
+      });
+      expect(await indexDefinition(raw)).toBeUndefined();
+      expect(await persistedAssignments(raw)).toEqual(before);
+    }, { beforeCollectorIndex: true });
+  }, 60000);
+
+  it("reports the collision through the deployment command and supports Prisma recovery", async () => {
+    await withDisposableDatabase(async (raw, url) => {
+      await deployBaseline(url);
+      await seedCollectorMembers(raw);
+      await insertAssignment(raw, "first", "collector");
+      await insertAssignment(raw, "second", "alternate");
+      const before = await persistedAssignments(raw);
+      const originalIndex = await indexDefinition(raw, historicalIndex);
+      expect(originalIndex).toBe(
+        'CREATE UNIQUE INDEX "CollectorAssignment_villageId_userId_year_month_key" ON public."CollectorAssignment" USING btree ("villageId", "userId", year, month)',
+      );
+      expect(await collectorMigrationHistory(raw)).toEqual([]);
+
+      const failed = migrationCommand(url, "npm", ["run", "db:deploy"]);
+      expect(failed.status, failed.output).toBe(1);
+      expect(failed.output).toContain("P3018");
+      expect(failed.output).toContain("Database error code: 23505");
+      expect(failed.output).toContain(`Migration name: ${collectorMigration}`);
+      expect(failed.output).toContain(fixtureCollision);
+      expect(failed.output).toContain(rollbackDiagnostic);
+      expect(await persistedAssignments(raw)).toEqual(before);
+      expect(await indexDefinition(raw)).toBeUndefined();
+      expect(await indexDefinition(raw, historicalIndex)).toBe(originalIndex);
+      expect(await collectorMigrationHistory(raw)).toEqual([{
+        finished: false, rolledBack: false, appliedSteps: 0, logs: expect.stringContaining(fixtureCollision),
+      }]);
+
+      const blockedRetry = migrationCommand(url, "npm", ["run", "db:deploy"]);
+      expect(blockedRetry.status, blockedRetry.output).toBe(1);
+      expect(blockedRetry.output).toContain("P3009");
+
+      // Model an approved one-row resolution in this disposable fixture only.
+      const resolution = await raw.query('UPDATE "CollectorAssignment" SET "isActive" = false WHERE id = $1', ["second"]);
+      expect(resolution.rowCount).toBe(1);
+      const resolved = before.map((row) => row.id === "second" ? { ...row, isActive: false } : row);
+      expect(await persistedAssignments(raw)).toEqual(resolved);
+
+      const recovery = migrationCommand(url, "npx", ["--no-install", "prisma", "migrate", "resolve", "--rolled-back", collectorMigration]);
+      expect(recovery.status, recovery.output).toBe(0);
+      expect(recovery.output).toContain(`Migration ${collectorMigration} marked as rolled back.`);
+      const retry = migrationCommand(url, "npm", ["run", "db:deploy"]);
+      expect(retry.status, retry.output).toBe(0);
+      expect(retry.output).toContain(`Applying migration \`${collectorMigration}\``);
+      expect(await collectorMigrationHistory(raw)).toEqual([
+        { finished: false, rolledBack: true, appliedSteps: 0, logs: expect.stringContaining(fixtureCollision) },
+        { finished: true, rolledBack: false, appliedSteps: 1, logs: null },
+      ]);
+      expect(await persistedAssignments(raw)).toEqual(resolved);
+      expect(await indexDefinition(raw, historicalIndex)).toBe(originalIndex);
+      expect(await indexDefinition(raw)).toBe(
+        'CREATE UNIQUE INDEX "CollectorAssignment_one_active_per_village_period" ON public."CollectorAssignment" USING btree ("villageId", year, month) WHERE ("isActive" = true)',
+      );
+    });
+  }, 180_000);
+
+  it("retires through the Chief action and replaces the collector while retaining history", async () => {
+    await fixture(async (p) => {
+      const period = getCurrentPeriod();
+      expect(await assignCollectorAction(form("collector", period))).toEqual({ success: true });
+      const original = await p.collectorAssignment.findFirstOrThrow({ where: { villageId: "v", ...period } });
+      await deactivated(original.id);
+      const retired = await p.collectorAssignment.findUniqueOrThrow({ where: { id: original.id } });
+      expect(retired).toMatchObject({ userId: "collector", ...period, isActive: false });
+
+      expect(await assignCollectorAction(form("alternate", period))).toEqual({ success: true });
+      expect(await p.collectorAssignment.findUnique({ where: { id: original.id } })).toEqual(retired);
+      const active = await p.collectorAssignment.findMany({ where: { villageId: "v", ...period, isActive: true } });
+      expect(active).toEqual([expect.objectContaining({ userId: "alternate" })]);
+      expect(await p.auditLog.count({ where: { entityId: original.id, actionType: "STATUS_CHANGE" } })).toBe(1);
+      expect(await p.auditLog.count({ where: { entityId: active[0].id, actionType: "ASSIGN" } })).toBe(1);
+    });
+  }, 60000);
+
   it.each([
     ["role", "assign"], ["membership", "assign"], ["role", "deactivate"], ["membership", "deactivate"],
   ] as const)("committed Chief %s revocation is rechecked by %s after a complete retry", async (change, operation) => {
@@ -143,10 +428,16 @@ describe.skipIf(!enabled)("Phase 3E collector transactions", () => {
     });
   }, 60000);
   it("simultaneous assignment actions serialize and preserve a single assignment and audit", async () => {
-    await fixture(async (p, _other, raw) => {
+    await fixture(async (p, other, raw) => {
+      const period = getCurrentPeriod();
       const written = barrier(); const release = barrier();
+      let firstPid: number | undefined;
+      boundary.before = async (tx) => {
+        const [backend] = await tx.$queryRaw<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
+        firstPid = backend.pid;
+      };
       boundary.after = async () => { written.open(); await release.reached; };
-      const first = observe(assignCollectorAction(form()));
+      const first = observe(assignCollectorAction(form("collector", period)));
       let second: ReturnType<typeof observe<Awaited<ReturnType<typeof assignCollectorAction>>>> | undefined;
       try {
         await reached(written, first);
@@ -156,16 +447,30 @@ describe.skipIf(!enabled)("Phase 3E collector transactions", () => {
         await expect(raw.query(`SELECT public.vfc_acquire_villages(ARRAY['v']::text[])`)).rejects.toMatchObject({ code: "40001", message: "VFC_SCOPE_BUSY_RETRY_TRANSACTION" });
         await raw.query("ROLLBACK");
         const snapshot = barrier(); const committed = barrier(); let attempts = 0;
-        boundary.client = _other;
-        boundary.before = async (tx) => { attempts += 1; if (attempts === 1) { await tx.$queryRaw`SELECT id FROM "Village" WHERE id='v'`; snapshot.open(); await committed.reached; } };
-        second = observe(assignCollectorAction(form("alternate")));
+        boundary.client = other;
+        boundary.before = async (tx) => {
+          attempts += 1;
+          if (attempts === 1) {
+            const [backend] = await tx.$queryRaw<{ pid: number }[]>`SELECT pg_backend_pid() AS pid FROM "Village" WHERE id='v'`;
+            expect(firstPid).toEqual(expect.any(Number));
+            expect(backend.pid).not.toBe(firstPid);
+            snapshot.open();
+            await committed.reached;
+          }
+        };
+        second = observe(assignCollectorAction(form("alternate", period)));
         try {
           await reached(snapshot, second); release.open();
           expect(await first).toEqual({ value: { success: true } }); boundary.after = null; committed.open();
           expect(await second).toMatchObject({ value: { success: false, formError: "An active Collector already exists for the selected period. Deactivate the existing assignment first." } });
           expect(attempts).toBe(2);
-          expect(await p.collectorAssignment.count({ where: { isActive: true } })).toBe(1);
-          expect(await p.auditLog.count({ where: { actionType: "ASSIGN" } })).toBe(1);
+          const rows = await p.collectorAssignment.findMany();
+          expect(rows).toEqual([expect.objectContaining({ userId: "collector", isActive: true, villageId: "v", ...period })]);
+          expect(await p.auditLog.findMany()).toEqual([expect.objectContaining({
+            actionType: "ASSIGN",
+            entityId: rows[0].id,
+            metadata: expect.objectContaining({ assignedUserId: "collector" }),
+          })]);
         } finally { committed.open(); }
       } finally { release.open(); await raw.query("ROLLBACK").catch((error: unknown) => console.error("Rollback cleanup failed", error)); await first; await second; }
     });

@@ -116,6 +116,8 @@ Open [http://localhost:5000](http://localhost:5000) in your browser.
 | `npm run db:deploy` | Apply pending migrations in a deployment environment |
 | `npm run db:studio` | Open Prisma Studio |
 
+For the Collector uniqueness migration, see the [deployment preflight and recovery runbook](docs/collector-uniqueness-migration-runbook.md).
+
 ## Project Structure
 
 The repository uses a feature-oriented organization under `src/features`. The exact contents may change as the project evolves.
